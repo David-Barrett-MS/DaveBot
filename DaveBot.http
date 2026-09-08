@@ -1,0 +1,6 @@
+@DaveBot_HostAddress = http://localhost:5220
+
+GET {{DaveBot_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
