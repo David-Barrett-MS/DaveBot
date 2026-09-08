@@ -38,7 +38,7 @@ internal sealed class HueMcpTools
     }
 
     [McpServerTool(Name = "control_hue_by_name")]
-    [Description("Controls a Philips Hue room or light by name in a single call. Prefer this tool for any user request to turn lights on/off, change brightness, or change color. Automatically matches the given name to a room first, then an individual light, and applies the change immediately - no need to call list_hue_rooms or list_hue_lights first. Pass name as 'all lights' to control every light. Provide at least one of on, brightness, or colorName.")]
+    [Description("Controls a Philips Hue room, zone, or light by name in a single call. Prefer this tool for any user request to turn lights on/off, change brightness, or change color. Automatically matches the given name to a room or zone first, then an individual light, and applies the change immediately - no need to call list_hue_rooms or list_hue_lights first. Pass name as 'all lights' to control every light. Provide at least one of on, brightness, or colorName.")]
     public async Task<string> ControlByNameAsync(
         [Description("The room or light name mentioned by the user, e.g. 'lounge' or 'kitchen counter'. Use 'all lights' to target every light.")] string name,
         [Description("Optional on/off state - use this for on/off requests, not colorName.")] bool? on = null,
@@ -146,7 +146,7 @@ internal sealed class HueMcpTools
         }
     }
     [McpServerTool(Name = "list_hue_rooms")]
-    [Description("Lists Philips Hue rooms with their IDs, names, contained light IDs, and the grouped_light service ID used to control all lights in the room together. Use this before controlling lights by room name.")]
+    [Description("Lists Philips Hue rooms and zones with their IDs, names, contained light IDs, and the grouped_light service ID used to control all lights in the room/zone together. Use this before controlling lights by room or zone name.")]
     public async Task<string> ListRoomsAsync(CancellationToken cancellationToken)
     {
         try

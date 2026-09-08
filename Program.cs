@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Betalgo.Ranul.OpenAI.ObjectModels.RequestModels;
 using Microsoft.AI.Foundry.Local;
 
@@ -25,6 +26,67 @@ var app = builder.Build();
 await FoundryLocalManager.CreateAsync(
     new Configuration { AppName = "DaveBot" },
     app.Logger);
+
+var discoveredEps = FoundryLocalManager.Instance.DiscoverEps();
+Console.WriteLine($"Foundry Local discovered {discoveredEps.Length} execution provider(s):");
+foreach (var ep in discoveredEps)
+{
+    Console.WriteLine($"  {ep.Name} (registered: {ep.IsRegistered})");
+}
+
+// Registering more than one GPU execution provider at once causes model load failures for
+// "generic-gpu" variants ("Running a model with multiple providers is not supported"), so only
+// register the single best available one instead of all discovered EPs.
+string[] epPreferenceOrder = ["CUDAExecutionProvider", "NvTensorRTRTXExecutionProvider", "OpenVINOExecutionProvider", "WebGpuExecutionProvider"];
+var bestEpName = epPreferenceOrder.FirstOrDefault(name =>
+    discoveredEps.Any(ep => string.Equals(ep.Name, name, StringComparison.OrdinalIgnoreCase)));
+
+if (bestEpName is not null)
+{
+    var epDownloadResult = await FoundryLocalManager.Instance.DownloadAndRegisterEpsAsync(
+        [bestEpName],
+        CreateEpProgressLogger());
+    Console.WriteLine($"Execution provider registration result for '{bestEpName}': Success={epDownloadResult.Success}, Status={epDownloadResult.Status}");
+}
+else
+{
+    Console.WriteLine("No known GPU execution provider was discovered; models will run on CPU.");
+}
+
+var startupCatalog = await FoundryLocalManager.Instance.GetCatalogAsync();
+var startupModels = await startupCatalog.ListModelsAsync();
+Console.WriteLine($"Foundry Local catalog '{startupCatalog.Name}' has {startupModels.Count} model(s) available:");
+foreach (var startupModel in startupModels)
+{
+    Console.WriteLine($"  {startupModel.Alias} (id: {startupModel.Id})");
+    foreach (var variant in startupModel.Variants)
+    {
+        Console.WriteLine($"    variant: {variant.Alias} (id: {variant.Id})");
+    }
+}
+
+if (startupModels.Count > 0)
+{
+    var infoType = startupModels[0].Info?.GetType();
+    if (infoType is not null)
+    {
+        Console.WriteLine($"Sample ModelInfo properties (from '{startupModels[0].Alias}'):");
+        foreach (var property in infoType.GetProperties())
+        {
+            object? value;
+            try
+            {
+                value = property.GetValue(startupModels[0].Info);
+            }
+            catch (Exception ex)
+            {
+                value = $"<error: {ex.Message}>";
+            }
+
+            Console.WriteLine($"  {property.Name} = {value}");
+        }
+    }
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -223,9 +285,25 @@ app.MapDelete("/api/speech/sessions/{sessionId}", async (string sessionId, Speec
 
 app.Run();
 
+static Action<string, double> CreateEpProgressLogger()
+{
+    var lastLoggedPercentByEp = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    return (epName, percent) =>
+    {
+        var roundedPercent = (int)Math.Round(percent);
+        if (lastLoggedPercentByEp.TryGetValue(epName, out var lastPercent) && lastPercent == roundedPercent)
+        {
+            return;
+        }
+
+        lastLoggedPercentByEp[epName] = roundedPercent;
+        Console.WriteLine($"  Registering EP '{epName}': {roundedPercent}%");
+    };
+}
+
 internal sealed class FoundryChatService
 {
-    internal static readonly string[] SupportedChatModels = ["qwen3-1.7b", "phi-4-mini"];
+    internal static readonly string[] SupportedChatModels = ["qwen3-vl-8b-instruct", "qwen3.5-9b", "qwen3.5-4b", "qwen3-1.7b", "phi-4-mini"];
 
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _modelLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> _loadedModels = new(StringComparer.OrdinalIgnoreCase);
@@ -257,15 +335,20 @@ internal sealed class FoundryChatService
 
         modelAlias = resolvedModelAlias;
 
+        var selectedRuntime = model.Info?.GetType().GetProperty("Runtime")?.GetValue(model.Info);
+        _logger.LogInformation("Model '{ModelAlias}' resolved to '{ModelId}' with runtime {Runtime}.", modelAlias, model.Id, selectedRuntime);
+
         await EnsureModelReadyAsync(modelAlias, model, cancellationToken);
 
         _logger.LogInformation("Creating chat client for model '{ModelAlias}'.", modelAlias);
+#pragma warning disable CS0618 // GetChatClientAsync is obsolete in favor of ChatSession, which has a different API shape incompatible with the Betalgo OpenAI message/tool types used throughout this file; migrating is a larger change tracked separately.
         var chatClient = await model.GetChatClientAsync(cancellationToken);
+#pragma warning restore CS0618
         _logger.LogInformation("Submitting prompt to model '{ModelAlias}'.", modelAlias);
 
         var messages = new List<ChatMessage>
         {
-            ChatMessage.FromSystem("You are DaveBot, a concise assistant. For any Philips Hue room or light request (turning on/off, changing brightness, changing color), call the control_hue_by_name tool directly with the room or light name extracted from the user's message - do not call list_hue_rooms or list_hue_lights first, and do not describe how you would do it in code. If the user asks about, or asks to set/apply/switch to, a Hue scene (e.g. 'what scenes does the lounge have', 'set lounge to Relax'), use list_hue_scenes to discover scenes and/or activate_hue_scene to apply one - do not use control_hue_by_name for scene requests. If Hue is not connected, ask the user to press the physical bridge link button, wait for confirmation, and then call connect_hue_bridge. Never claim a light, room, or scene changed unless a tool result confirms it.")
+            ChatMessage.FromSystem("You are DaveBot, a concise assistant. For any Philips Hue room or light request (turning on/off, changing brightness, changing color), call the control_hue_by_name tool directly with the room or light name extracted from the user's message - do not call list_hue_rooms or list_hue_lights first, and do not describe how you would do it in code. If the user asks what scenes are available (e.g. 'what scenes does the lounge have'), call list_hue_scenes directly. If the user asks to set/apply/switch to a specific named scene (e.g. 'set lounge to Relax', 'set lounge to Moonlight'), call activate_hue_scene directly with roomName and sceneName extracted from the user's message - do not call list_hue_scenes first, the scene name does not need to be validated beforehand. Do not use control_hue_by_name for scene requests. If Hue is not connected, ask the user to press the physical bridge link button, wait for confirmation, and then call connect_hue_bridge. Never claim a light, room, or scene changed unless a tool result confirms it.")
         };
 
         if (IsHueBridgeConnectionRequest(request.Message))
@@ -352,7 +435,7 @@ internal sealed class FoundryChatService
 
             for (var i = 0; i < toolCalls.Count; i++)
             {
-                messages.Add(ChatMessage.FromTool(toolResults[i], toolCalls[i].Id));
+                messages.Add(ChatMessage.FromTool(toolResults[i], toolCalls[i].Id ?? $"toolcall_{i}"));
             }
 
             if (round + 1 >= maxToolCallRounds)
@@ -527,12 +610,15 @@ internal sealed class FoundryChatService
                 return null;
             }
 
-            var roomName = GetPropertyCaseInsensitive(root, "roomName")?.GetString() ?? "the room";
+            var roomNames = GetPropertyCaseInsensitive(root, "roomNames") is { ValueKind: JsonValueKind.Array } namesProp
+                ? namesProp.EnumerateArray().Select(n => n.GetString() ?? string.Empty).Where(n => n.Length > 0).ToArray()
+                : [];
+            var roomNamesText = roomNames.Length > 0 ? string.Join(", ", roomNames) : "the room";
             var sceneName = GetPropertyCaseInsensitive(root, "sceneName")?.GetString() ?? "the scene";
 
             return new ChatResponse(
                 modelAlias,
-                $"Scene '{sceneName}' was activated in {roomName}.",
+                $"Scene '{sceneName}' was activated in {roomNamesText}.",
                 DateTimeOffset.UtcNow);
         }
         catch (JsonException)
@@ -642,10 +728,86 @@ internal sealed class FoundryChatService
         if (parsedCalls.Count > 0)
         {
             _logger.LogInformation("Parsed {Count} inline tool_call block(s) from model text output (non-structured tool-call format).", parsedCalls.Count);
+            return parsedCalls;
         }
 
-        return parsedCalls.Count > 0 ? parsedCalls : null;
+        var plainTextCall = TryParsePlainTextToolCall(content);
+        if (plainTextCall is not null)
+        {
+            _logger.LogInformation("Parsed a plain-text tool call ('{ToolName}') from model text output (non-JSON format).", plainTextCall.FunctionCall!.Name);
+            return [plainTextCall];
+        }
+
+        return null;
     }
+
+    /// <summary>
+    /// Some small local models (observed with phi-4-mini) narrate a tool call as plain text instead of
+    /// JSON, e.g. "list_hue_scenes room_name: lounge" or "activate_hue_scene roomName: lounge, sceneName: Relax".
+    /// This looks for a known tool name followed by "key: value" pairs and builds a structured ToolCall from it.
+    /// </summary>
+    private ToolCall? TryParsePlainTextToolCall(string content)
+    {
+        foreach (var toolDefinition in _hueChatTools.ToolDefinitions)
+        {
+            var toolName = toolDefinition.Function?.Name;
+            if (string.IsNullOrWhiteSpace(toolName))
+            {
+                continue;
+            }
+
+            var nameMatch = Regex.Match(content, $@"\b{Regex.Escape(toolName)}\b", RegexOptions.IgnoreCase);
+            if (!nameMatch.Success)
+            {
+                continue;
+            }
+
+            var knownProperties = toolDefinition.Function?.Parameters?.Properties?.Keys
+                ?? Enumerable.Empty<string>();
+
+            var argumentsAfterName = content[(nameMatch.Index + nameMatch.Length)..];
+            var arguments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (Match pairMatch in Regex.Matches(argumentsAfterName, @"(\w+)""?\s*[:=]\s*""?([^,\n""]+)""?"))
+            {
+                var key = pairMatch.Groups[1].Value;
+                var matchedProperty = knownProperties.FirstOrDefault(p => NormalizePropertyName(p) == NormalizePropertyName(key));
+                if (matchedProperty is null)
+                {
+                    continue;
+                }
+
+                arguments[matchedProperty] = pairMatch.Groups[2].Value.Trim();
+            }
+
+            if (arguments.Count == 0)
+            {
+                continue;
+            }
+
+            return new ToolCall
+            {
+                Id = $"plaintext_{Guid.NewGuid():N}",
+                Type = "function",
+                Index = 0,
+                FunctionCall = new FunctionCall
+                {
+                    Name = toolName,
+                    Arguments = JsonSerializer.Serialize(arguments)
+                }
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Normalizes a property name for loose comparison between the tool's declared camelCase parameter
+    /// names (e.g. "roomName") and whatever casing/separator convention a model happens to narrate in
+    /// plain text (e.g. "room_name", "Room-Name"), by stripping non-alphanumeric characters and lowering.
+    /// </summary>
+    private static string NormalizePropertyName(string name) =>
+        Regex.Replace(name, "[^a-zA-Z0-9]", string.Empty).ToLowerInvariant();
 
     /// <summary>
     /// Scans forward from a '{' character and returns the substring up to its matching balanced '}',
@@ -780,6 +942,7 @@ internal sealed class FoundryChatService
         var model = await catalog.GetModelAsync(requestedAlias, cancellationToken);
         if (model is not null)
         {
+            PreferGpuVariant(model);
             return (model, requestedAlias);
         }
 
@@ -798,6 +961,7 @@ internal sealed class FoundryChatService
             var fallbackModel = await catalog.GetModelAsync(fallback.Alias, cancellationToken);
             if (fallbackModel is not null)
             {
+                PreferGpuVariant(fallbackModel);
                 return (fallbackModel, fallback.Alias);
             }
         }
@@ -805,6 +969,50 @@ internal sealed class FoundryChatService
         var availableAliases = string.Join(", ", models.Select(candidate => candidate.Alias));
         throw new InvalidOperationException(
             $"Model '{requestedAlias}' was not found in the local Foundry catalog. Available aliases: {availableAliases}");
+    }
+
+    /// <summary>
+    /// The Foundry Local catalog's default-selected variant for a model alias does not always
+    /// pick a GPU-capable build even when one is available (observed for some aliases where the
+    /// default resolves to a "-generic-cpu" variant despite "-cuda-gpu"/"-generic-gpu" siblings
+    /// existing). Explicitly prefer the best available GPU variant so local hardware acceleration
+    /// is actually used.
+    /// </summary>
+    private static void PreferGpuVariant(IModel model)
+    {
+        var runtimeValue = model.Info?.GetType().GetProperty("Runtime")?.GetValue(model.Info);
+        var runtimeDescription = runtimeValue?.ToString() ?? string.Empty;
+        if (runtimeDescription.Contains("DeviceType = GPU", StringComparison.OrdinalIgnoreCase) ||
+            runtimeDescription.Contains("DeviceType = NPU", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var preferredVariant = GetGpuVariantPreferenceOrder(model).FirstOrDefault();
+        if (preferredVariant is not null)
+        {
+            model.SelectVariant(preferredVariant);
+        }
+    }
+
+    /// <summary>
+    /// Returns this model's variants ordered from most to least preferred for hardware acceleration
+    /// (CUDA, then TensorRT-RTX, then generic GPU/DirectML), excluding the CPU-only variant. Used to
+    /// retry with the next-best variant if the currently selected one fails to load (some GPU variant
+    /// packages have been observed to be broken, e.g. duplicate ONNX node name errors).
+    /// </summary>
+    private static IEnumerable<IModel> GetGpuVariantPreferenceOrder(IModel model)
+    {
+        string[] gpuVariantSuffixes = ["-cuda-gpu", "-trtrtx-gpu", "-generic-gpu"];
+        foreach (var suffix in gpuVariantSuffixes)
+        {
+            var gpuVariant = model.Variants.FirstOrDefault(variant =>
+                variant.Id.Contains(suffix, StringComparison.OrdinalIgnoreCase));
+            if (gpuVariant is not null)
+            {
+                yield return gpuVariant;
+            }
+        }
     }
 
     private async Task EnsureModelReadyAsync(string modelAlias, IModel model, CancellationToken cancellationToken)
@@ -828,28 +1036,64 @@ internal sealed class FoundryChatService
 
             _logger.LogInformation("Model '{ModelAlias}' not loaded. Starting download if required.", modelAlias);
 
-            var lastLoggedProgress = -1;
-            await model.DownloadAsync(progress =>
-            {
-                var currentProgress = (int)Math.Floor(progress);
-                if (currentProgress <= lastLoggedProgress || currentProgress % 10 != 0)
-                {
-                    return;
-                }
-
-                lastLoggedProgress = currentProgress;
-                _logger.LogInformation("Model '{ModelAlias}' download progress: {Progress}%", modelAlias, currentProgress);
-            }, cancellationToken);
-
-            _logger.LogInformation("Loading model '{ModelAlias}' into memory.", modelAlias);
-            await model.LoadAsync(cancellationToken);
-            _logger.LogInformation("Model '{ModelAlias}' is loaded.", modelAlias);
+            await DownloadAndLoadWithFallbackAsync(modelAlias, model, cancellationToken);
 
             _loadedModels[modelAlias] = true;
         }
         finally
         {
             modelLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Downloads and loads the model's currently selected variant. If loading fails (some GPU
+    /// variant packages have been observed to be broken, e.g. duplicate ONNX node name errors),
+    /// falls back through the remaining GPU variants and finally the CPU variant before giving up.
+    /// </summary>
+    private async Task DownloadAndLoadWithFallbackAsync(string modelAlias, IModel model, CancellationToken cancellationToken)
+    {
+        var candidates = new List<IModel> { model };
+        candidates.AddRange(GetGpuVariantPreferenceOrder(model).Where(v => v.Id != model.Id));
+        var cpuVariant = model.Variants.FirstOrDefault(v => v.Id.Contains("-generic-cpu", StringComparison.OrdinalIgnoreCase));
+        if (cpuVariant is not null && candidates.All(c => c.Id != cpuVariant.Id))
+        {
+            candidates.Add(cpuVariant);
+        }
+
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var candidate = candidates[i];
+            if (i > 0)
+            {
+                _logger.LogWarning("Falling back to variant '{VariantId}' for model '{ModelAlias}'.", candidate.Id, modelAlias);
+                model.SelectVariant(candidate);
+            }
+
+            try
+            {
+                var lastLoggedProgress = -1;
+                await model.DownloadAsync(progress =>
+                {
+                    var currentProgress = (int)Math.Floor(progress);
+                    if (currentProgress <= lastLoggedProgress || currentProgress % 10 != 0)
+                    {
+                        return;
+                    }
+
+                    lastLoggedProgress = currentProgress;
+                    _logger.LogInformation("Model '{ModelAlias}' download progress: {Progress}%", modelAlias, currentProgress);
+                }, cancellationToken);
+
+                _logger.LogInformation("Loading model '{ModelAlias}' variant '{VariantId}' into memory.", modelAlias, candidate.Id);
+                await model.LoadAsync(cancellationToken);
+                _logger.LogInformation("Model '{ModelAlias}' is loaded (variant '{VariantId}').", modelAlias, candidate.Id);
+                return;
+            }
+            catch (FoundryLocalException ex) when (i < candidates.Count - 1)
+            {
+                _logger.LogWarning(ex, "Failed to load model '{ModelAlias}' variant '{VariantId}'; trying next variant.", modelAlias, candidate.Id);
+            }
         }
     }
 }
@@ -944,7 +1188,9 @@ internal sealed class SpeechChatService
 
             await EnsureSttModelReadyAsync(sttModel, cancellationToken);
 
-            var audioClient = await sttModel.GetAudioClientAsync(cancellationToken);
+            #pragma warning disable CS0618 // GetAudioClientAsync is obsolete in favor of AudioSession; migrating is a larger change tracked separately.
+                        var audioClient = await sttModel.GetAudioClientAsync(cancellationToken);
+            #pragma warning restore CS0618
             var sttResult = await audioClient.TranscribeAudioAsync(wavPath, cancellationToken);
             var transcript = sttResult.Text?.Trim() ?? string.Empty;
 

@@ -48,7 +48,7 @@ internal sealed record HueControlResult(
     IReadOnlyList<string> AffectedLightNames);
 
 internal sealed record HueSceneActivationResult(
-    string RoomName,
+    IReadOnlyList<string> RoomNames,
     string SceneName,
     bool Applied);
 
@@ -138,11 +138,15 @@ internal sealed class HueService
     {
         return ExecuteWithClientAsync(async (client, options, ct) =>
         {
-            _logger.LogInformation("Requesting Hue rooms from bridge {BridgeBaseUrl}", options.BridgeBaseUrl);
+            _logger.LogInformation("Requesting Hue rooms and zones from bridge {BridgeBaseUrl}", options.BridgeBaseUrl);
 
             using var roomResponse = await client.GetAsync("resource/room", ct);
             var roomRoot = await ParseJsonAsync(roomResponse, ct);
             EnsureHueSuccess(roomResponse, roomRoot, "Failed to read Hue rooms.");
+
+            using var zoneResponse = await client.GetAsync("resource/zone", ct);
+            var zoneRoot = await ParseJsonAsync(zoneResponse, ct);
+            EnsureHueSuccess(zoneResponse, zoneRoot, "Failed to read Hue zones.");
 
             using var lightResponse = await client.GetAsync("resource/light", ct);
             var lightRoot = await ParseJsonAsync(lightResponse, ct);
@@ -160,11 +164,21 @@ internal sealed class HueService
             var rooms = (roomRoot?["data"]?.AsArray() ?? [])
                 .Select(node => ParseRoom(node, deviceIdToLightId))
                 .Where(static r => r is not null)
-                .Cast<HueRoomDto>()
-                .ToArray();
+                .Cast<HueRoomDto>();
 
-            _logger.LogInformation("Hue returned {RoomCount} rooms from bridge {BridgeBaseUrl}", rooms.Length, options.BridgeBaseUrl);
-            return (IReadOnlyList<HueRoomDto>)rooms;
+            // Zones (e.g. a "Lounge" zone grouping multiple physical rooms/lights) are a distinct Hue
+            // resource type from rooms, but are controlled and scoped for scenes the same way (via a
+            // grouped_light service), so they're merged into the same collection used throughout for
+            // free-text name resolution, control, and scene activation.
+            var zones = (zoneRoot?["data"]?.AsArray() ?? [])
+                .Select(node => ParseRoom(node, deviceIdToLightId))
+                .Where(static z => z is not null)
+                .Cast<HueRoomDto>();
+
+            var groups = rooms.Concat(zones).ToArray();
+
+            _logger.LogInformation("Hue returned {RoomCount} room(s) and zone(s) from bridge {BridgeBaseUrl}", groups.Length, options.BridgeBaseUrl);
+            return (IReadOnlyList<HueRoomDto>)groups;
         }, cancellationToken);
     }
 
@@ -229,13 +243,14 @@ internal sealed class HueService
             return scenes;
         }
 
-        var matchedRoom = FindAllNameMatches(rooms, r => r.Name, roomName.Trim()).FirstOrDefault();
-        if (matchedRoom is null)
+        var matchedRooms = FindAllNameMatches(rooms, r => r.Name, roomName.Trim());
+        if (matchedRooms.Count == 0)
         {
             return [];
         }
 
-        return scenes.Where(s => string.Equals(s.GroupId, matchedRoom.Id, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var matchedRoomIds = matchedRooms.Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return scenes.Where(s => s.GroupId is not null && matchedRoomIds.Contains(s.GroupId)).ToArray();
     }
 
     /// <summary>
@@ -255,44 +270,61 @@ internal sealed class HueService
         }
 
         var rooms = await GetRoomsAsync(cancellationToken);
-        var matchedRoom = FindAllNameMatches(rooms, r => r.Name, roomName.Trim()).FirstOrDefault()
-            ?? throw new HueApiException($"No room matching '{roomName}' was found. Known rooms: {string.Join(", ", rooms.Select(r => r.Name))}");
-
-        var scenes = await GetScenesAsync(matchedRoom.Name, cancellationToken);
-        if (scenes.Count == 0)
+        var matchedRooms = FindAllNameMatches(rooms, r => r.Name, roomName.Trim());
+        if (matchedRooms.Count == 0)
         {
-            throw new HueApiException($"Room '{matchedRoom.Name}' has no available scenes.");
+            throw new HueApiException($"No room matching '{roomName}' was found. Known rooms: {string.Join(", ", rooms.Select(r => r.Name))}");
         }
 
-        var matchedScene = FindAllNameMatches(scenes, s => s.Name, sceneName.Trim()).FirstOrDefault()
-            ?? throw new HueApiException($"No scene matching '{sceneName}' was found in room '{matchedRoom.Name}'. Known scenes: {string.Join(", ", scenes.Select(s => s.Name))}");
+        var activatedRoomNames = new List<string>();
+        string? resolvedSceneName = null;
 
-        await ExecuteWithClientAsync(async (client, _, ct) =>
+        foreach (var matchedRoom in matchedRooms)
         {
-            var payloadJson = new JsonObject
+            var scenes = await GetScenesAsync(matchedRoom.Name, cancellationToken);
+            var matchedScene = FindAllNameMatches(scenes, s => s.Name, sceneName.Trim()).FirstOrDefault();
+            if (matchedScene is null)
             {
-                ["recall"] = new JsonObject
+                _logger.LogWarning("No scene matching '{SceneName}' was found in room '{RoomName}'; skipping.", sceneName, matchedRoom.Name);
+                continue;
+            }
+
+            resolvedSceneName = matchedScene.Name;
+
+            await ExecuteWithClientAsync(async (client, _, ct) =>
+            {
+                var payloadJson = new JsonObject
                 {
-                    ["action"] = "active"
-                }
-            }.ToJsonString(JsonOptions);
+                    ["recall"] = new JsonObject
+                    {
+                        ["action"] = "active"
+                    }
+                }.ToJsonString(JsonOptions);
 
-            _logger.LogInformation("Activating Hue scene {SceneId} ('{SceneName}') in room '{RoomName}'.", matchedScene.Id, matchedScene.Name, matchedRoom.Name);
+                _logger.LogInformation("Activating Hue scene {SceneId} ('{SceneName}') in room '{RoomName}'.", matchedScene.Id, matchedScene.Name, matchedRoom.Name);
 
-            using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"resource/scene/{Uri.EscapeDataString(matchedScene.Id)}")
-            {
-                Content = new StringContent(payloadJson)
-            };
-            putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"resource/scene/{Uri.EscapeDataString(matchedScene.Id)}")
+                {
+                    Content = new StringContent(payloadJson)
+                };
+                putRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
-            using var putResponse = await client.SendAsync(putRequest, ct);
-            var updateRoot = await ParseJsonAsync(putResponse, ct);
-            EnsureHueSuccess(putResponse, updateRoot, $"Failed to activate Hue scene '{matchedScene.Name}'.");
+                using var putResponse = await client.SendAsync(putRequest, ct);
+                var updateRoot = await ParseJsonAsync(putResponse, ct);
+                EnsureHueSuccess(putResponse, updateRoot, $"Failed to activate Hue scene '{matchedScene.Name}'.");
 
-            return true;
-        }, cancellationToken);
+                return true;
+            }, cancellationToken);
 
-        return new HueSceneActivationResult(matchedRoom.Name, matchedScene.Name, true);
+            activatedRoomNames.Add(matchedRoom.Name);
+        }
+
+        if (activatedRoomNames.Count == 0)
+        {
+            throw new HueApiException($"No scene matching '{sceneName}' was found in any room matching '{roomName}'.");
+        }
+
+        return new HueSceneActivationResult(activatedRoomNames, resolvedSceneName ?? sceneName.Trim(), true);
     }
 
     private static HueSceneDto? ParseScene(JsonNode? node, IReadOnlyDictionary<string, string> roomIdToName)
@@ -718,6 +750,12 @@ internal sealed class HueService
         return new HueLightDto(id, name, isOn, brightness, colorX, colorY);
     }
 
+    /// <summary>
+    /// Parses a Hue "room" or "zone" resource into a HueRoomDto. Both resource types expose a
+    /// grouped_light service and a children list the same way, but zone children can reference
+    /// individual "light" resources directly (in addition to "device", as rooms always do), since
+    /// a zone can group specific lights across different physical rooms.
+    /// </summary>
     private static HueRoomDto? ParseRoom(JsonNode? node, ILookup<string, string> deviceIdToLightId)
     {
         if (node is not JsonObject room)
@@ -741,15 +779,26 @@ internal sealed class HueService
             .FirstOrDefault(rid => !string.IsNullOrWhiteSpace(rid));
 
         var children = room["children"]?.AsArray() ?? [];
-        var deviceIds = children
+        var childObjects = children
             .Select(child => child as JsonObject)
-            .Where(child => child is not null && string.Equals(child["rtype"]?.GetValue<string>(), "device", StringComparison.OrdinalIgnoreCase))
+            .Where(static child => child is not null)
+            .ToArray();
+
+        var deviceIds = childObjects
+            .Where(child => string.Equals(child!["rtype"]?.GetValue<string>(), "device", StringComparison.OrdinalIgnoreCase))
+            .Select(child => child!["rid"]?.GetValue<string>())
+            .Where(rid => !string.IsNullOrWhiteSpace(rid))
+            .Select(rid => rid!);
+
+        var directLightIds = childObjects
+            .Where(child => string.Equals(child!["rtype"]?.GetValue<string>(), "light", StringComparison.OrdinalIgnoreCase))
             .Select(child => child!["rid"]?.GetValue<string>())
             .Where(rid => !string.IsNullOrWhiteSpace(rid))
             .Select(rid => rid!);
 
         var lightIds = deviceIds
             .SelectMany(deviceId => deviceIdToLightId[deviceId])
+            .Concat(directLightIds)
             .Distinct()
             .ToArray();
 
