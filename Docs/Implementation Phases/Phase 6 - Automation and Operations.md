@@ -2,7 +2,7 @@
 
 ## Objective
 
-Add Philips Hue switch-triggered automation and complete the operational
+Add Philips Hue switch- and motion-sensor-triggered automation and complete the operational
 features needed to run DaveBot reliably: backups, recovery, service operation,
 security maintenance, and incremental end-to-end testing.
 
@@ -15,14 +15,19 @@ security maintenance, and incremental end-to-end testing.
 
 ### 1. Hue event ingestion
 
-1. Extend the Hue adapter with `IDeviceStateSource` and normalize bridge events
-   into `DeviceStateChanged`.
-2. Prefer a supported Hue event stream; if unavailable, use bounded polling
-   with documented interval and recovery behavior.
-3. Implement reconnect with bounded exponential backoff.
-4. Reconcile relevant device state after reconnect before processing new
-   triggers, preventing stale cache actions.
-5. Import/map Hue switches as `hue.switch` devices and expose their current
+1. Extend the Hue adapter with `IDeviceStateSource` and normalize CLIP v2 SSE
+   button, motion, and light-level event batches from `/eventstream/clip/v2` into stable
+   `DeviceStateChanged` IDs.
+2. Run an independent, application-key-authenticated stream per mapped Hue
+   hub, retaining bridge-ID TLS hostname routing and certificate pinning.
+3. Reconnect failed streams with exponential backoff capped at 30 seconds and
+   reconcile each hub's mapped switch and motion-sensor state before accepting stream events.
+4. Treat reconciliation, initial stream snapshots, and new mappings as
+   baselines so a historic `last_event` is never triggered. Only after three
+   consecutive stream failures use the legacy one-second poll, only during the
+   bounded wait for the next stream retry, while continuing stream recovery.
+5. Import/map Hue switches as `hue.switch` devices and correlated motion plus
+   ambient-light resources as `hue.motion-sensor` devices; expose their current
    status in the Admin UI.
 
 ### 2. Triggers and action sets

@@ -145,3 +145,5 @@ D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveBrain\bin\Debug\net10.0\Microso
 D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveBrain\bin\Debug\net10.0\Microsoft.EntityFrameworkCore.Relational.dll
 D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveBrain\bin\Debug\net10.0\OpenIddict.EntityFrameworkCore.dll
 D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveBrain\bin\Debug\net10.0\OpenIddict.EntityFrameworkCore.Models.dll
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveBrain\bin\Debug\net10.0\dotnet-tools.json
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveBrain\obj\Debug\net10.0\staticwebassets.upToDateCheck.txt

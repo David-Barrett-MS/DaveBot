@@ -9,6 +9,16 @@ public sealed record HomeDataExportDocument(
 
     // Optional to keep existing version-1 import documents compatible.
     public IReadOnlyList<CommandAlias> CommandAliases { get; init; } = Array.Empty<CommandAlias>();
+
+    // Optional to keep existing version-1 import documents compatible.
+    public IReadOnlyList<AutomationAction> AutomationActions { get; init; } =
+        Array.Empty<AutomationAction>();
+
+    public IReadOnlyList<AutomationActionSet> AutomationActionSets { get; init; } =
+        Array.Empty<AutomationActionSet>();
+
+    public IReadOnlyList<AutomationTrigger> AutomationTriggers { get; init; } =
+        Array.Empty<AutomationTrigger>();
 }
 
 public sealed record HomeDataImportResult(int ImportedLocations, int ImportedDevices);
@@ -24,6 +34,9 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
             state.Devices.ToArray())
         {
             CommandAliases = state.CommandAliases.ToArray(),
+            AutomationActions = state.AutomationActions.ToArray(),
+            AutomationActionSets = state.AutomationActionSets.ToArray(),
+            AutomationTriggers = state.AutomationTriggers.ToArray(),
         };
     }
 
@@ -33,14 +46,20 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
     {
         ArgumentNullException.ThrowIfNull(document);
         if (document.SchemaVersion != HomeDataExportDocument.CurrentSchemaVersion ||
-            document.Locations is null || document.Devices is null || document.CommandAliases is null)
+            document.Locations is null || document.Devices is null || document.CommandAliases is null ||
+            document.AutomationActions is null || document.AutomationActionSets is null ||
+            document.AutomationTriggers is null)
         {
             throw new InvalidOperationException("The home data import format is not supported.");
         }
 
         if (document.Locations.GroupBy(location => location.Id).Any(group => group.Count() > 1) ||
             document.Devices.GroupBy(device => device.Id).Any(group => group.Count() > 1) ||
-            document.CommandAliases.GroupBy(alias => alias.Id).Any(group => group.Count() > 1))
+            document.CommandAliases.GroupBy(alias => alias.Id).Any(group => group.Count() > 1) ||
+            document.AutomationActions.GroupBy(action => action.Id).Any(group => group.Count() > 1) ||
+            document.AutomationActionSets.GroupBy(actionSet => actionSet.Id)
+                .Any(group => group.Count() > 1) ||
+            document.AutomationTriggers.GroupBy(trigger => trigger.Id).Any(group => group.Count() > 1))
         {
             throw new InvalidOperationException("The import file contains duplicate object IDs.");
         }
@@ -53,6 +72,18 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
                 state.Document.CommandAliases,
                 document.CommandAliases,
                 alias => alias.Id),
+            AutomationActions = MergeById(
+                state.Document.AutomationActions,
+                document.AutomationActions,
+                action => action.Id),
+            AutomationActionSets = MergeById(
+                state.Document.AutomationActionSets,
+                document.AutomationActionSets,
+                actionSet => actionSet.Id),
+            AutomationTriggers = MergeById(
+                state.Document.AutomationTriggers,
+                document.AutomationTriggers,
+                trigger => trigger.Id),
         }, homeStateStore.Current.Revision, cancellationToken);
 
         return new HomeDataImportResult(document.Locations.Count, document.Devices.Count);

@@ -1,0 +1,12 @@
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\bin\Release\net10.0\DaveHome.deps.json
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\bin\Release\net10.0\DaveHome.dll
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\bin\Release\net10.0\DaveHome.pdb
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.GeneratedMSBuildEditorConfig.editorconfig
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.AssemblyInfoInputs.cache
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.AssemblyInfo.cs
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.csproj.CoreCompileInputs.cache
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.sourcelink.json
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.dll
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\refint\DaveHome.dll
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\DaveHome.pdb
+D:\Github Repos\David-Barrett-MS\DaveBot\src\DaveHome\obj\Release\net10.0\ref\DaveHome.dll

@@ -3,3 +3,14 @@
 ################################################################################
 
 /.vs
+
+/src/DaveBrain/wwwroot/DaveBrain.styles.css
+/src/DaveBrain/wwwroot/**/*.br
+/src/DaveBrain/wwwroot/**/*.gz
+/src/DaveBrain/*.deps.json
+/src/DaveBrain/*.runtimeconfig.json
+/src/DaveBrain/*.staticwebassets.endpoints.json
+/src/DaveBrain/*.dll
+/src/DaveBrain/*.pdb
+/src/DaveBrain/*.exe
+/src/DaveBrain/web.config

@@ -246,7 +246,8 @@ public sealed class MtlsAccessTokenProvider
 
             using var certificate = X509Certificate2.CreateFromPem(_credentials.CertificatePem, _credentials.PrivateKeyPem);
             using var client = _createClient(certificate);
-            using var response = await client.PostAsync(_discovery.TokenEndpoint,
+            using var response = await client.PostAsync(
+                new Uri(_configuration.EffectiveMtlsEndpoint, _discovery.TokenEndpoint.PathAndQuery),
                 new FormUrlEncodedContent(
                 [
                     new("client_id", _configuration.ClientId),

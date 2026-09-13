@@ -1,47 +1,142 @@
 @page
 @model DaveBrain.Pages.Hubs.ImportModel
 @{
-    ViewData["Title"] = "Import Hue lights";
+    ViewData["Title"] = "Import Hue devices";
 }
 
-<h1>Import Hue lights</h1>
+<h1>Import Hue devices</h1>
 <div asp-validation-summary="ModelOnly" class="text-danger"></div>
 
 @if (!Model.RetrievedCandidates)
 {
-    <p>Unable to check for new lights.</p>
+    <p>Unable to check for new Hue devices.</p>
 }
-else if (Model.Candidates.Count == 0)
+else if (Model.Candidates.Count == 0 && Model.SwitchCandidates.Count == 0 &&
+         Model.MotionSensorCandidates.Count == 0)
 {
-    <p>No new lights.</p>
+    <p>No new Hue devices.</p>
 }
 else
 {
+    var selectionIndex = 0;
+    <form method="post" asp-page-handler="ImportSelected">
+        <input type="hidden" name="hubId" value="@Model.HubId" />
+        <div class="d-flex gap-2 mb-3">
+            <button type="button" class="btn btn-outline-secondary" id="select-all-devices">Select all</button>
+            <button type="button" class="btn btn-outline-secondary" id="deselect-all-devices">Deselect all</button>
+            <button type="submit" class="btn btn-primary">Import selected</button>
+        </div>
+    @if (Model.Candidates.Count > 0)
+    {
+    <h2>Lights</h2>
     <table class="table">
-        <thead><tr><th>Bridge name</th><th>Capabilities</th><th>Import</th></tr></thead>
+        <thead><tr><th>Select</th><th>Bridge name</th><th>Capabilities</th><th>Import</th></tr></thead>
         <tbody>
         @foreach (var light in Model.Candidates)
         {
             <tr>
+                <td>
+                    <input type="checkbox" name="selections[@selectionIndex].Selected" value="true" class="device-selection" aria-label="Select @light.Name" />
+                    <input type="hidden" name="selections[@selectionIndex].Selected" value="false" />
+                </td>
                 <td>@light.Name</td>
                 <td>@light.Capabilities</td>
                 <td>
-                    <form method="post">
-                        <input type="hidden" name="hubId" value="@Model.HubId" />
-                        <input type="hidden" name="resourceId" value="@light.ResourceId" />
-                        <input type="text" name="displayName" value="@light.Name" aria-label="Display name" />
-                        <select name="locationId" aria-label="Location">
+                    <input type="hidden" name="selections[@selectionIndex].ResourceId" value="@light.ResourceId" />
+                    <input type="hidden" name="selections[@selectionIndex].DeviceType" value="hue.light" />
+                    <input type="text" name="selections[@selectionIndex].DisplayName" value="@light.Name" aria-label="Display name" />
+                    <select name="selections[@selectionIndex].LocationId" aria-label="Location">
                             <option value="">No location</option>
                         @foreach (var location in Model.Locations)
                         {
                             <option value="@location.Id">@location.Name</option>
                         }
-                        </select>
-                        <button type="submit" class="btn btn-sm btn-primary">Import</button>
-                    </form>
+                    </select>
+                    <button type="submit" class="btn btn-sm btn-primary" formaction="?handler=ImportSingle" name="selectionIndex" value="@selectionIndex">Import</button>
                 </td>
             </tr>
+            selectionIndex++;
         }
         </tbody>
     </table>
+    }
+
+    @if (Model.SwitchCandidates.Count > 0)
+    {
+    <h2>Switch buttons</h2>
+    <table class="table">
+        <thead><tr><th>Select</th><th>Bridge button</th><th>Current status</th><th>Import</th></tr></thead>
+        <tbody>
+        @foreach (var switchDevice in Model.SwitchCandidates)
+        {
+            <tr>
+                <td>
+                    <input type="checkbox" name="selections[@selectionIndex].Selected" value="true" class="device-selection" aria-label="Select @switchDevice.Name" />
+                    <input type="hidden" name="selections[@selectionIndex].Selected" value="false" />
+                </td>
+                <td>@switchDevice.Name</td>
+                <td>@switchDevice.State.Attributes?.GetValueOrDefault("event", "Unknown")</td>
+                <td>
+                    <input type="hidden" name="selections[@selectionIndex].ResourceId" value="@switchDevice.ResourceId" />
+                    <input type="hidden" name="selections[@selectionIndex].DeviceType" value="hue.switch" />
+                    <input type="text" name="selections[@selectionIndex].DisplayName" value="@switchDevice.Name" aria-label="Display name" />
+                    <button type="submit" class="btn btn-sm btn-primary" formaction="?handler=ImportSingle" name="selectionIndex" value="@selectionIndex">Import</button>
+                </td>
+            </tr>
+            selectionIndex++;
+        }
+        </tbody>
+    </table>
+    }
+
+    @if (Model.MotionSensorCandidates.Count > 0)
+    {
+    <h2>Motion sensors</h2>
+    <table class="table">
+        <thead><tr><th>Select</th><th>Bridge sensor</th><th>Current status</th><th>Import</th></tr></thead>
+        <tbody>
+        @foreach (var sensor in Model.MotionSensorCandidates)
+        {
+            <tr>
+                <td>
+                    <input type="checkbox" name="selections[@selectionIndex].Selected" value="true" class="device-selection" aria-label="Select @sensor.Name" />
+                    <input type="hidden" name="selections[@selectionIndex].Selected" value="false" />
+                </td>
+                <td>@sensor.Name</td>
+                <td>
+                    Motion: @sensor.State.Attributes?.GetValueOrDefault("motion", "Unknown");
+                    Light: @sensor.State.Attributes?.GetValueOrDefault("lightLevel", "Unavailable")
+                </td>
+                <td>
+                    <input type="hidden" name="selections[@selectionIndex].ResourceId" value="@sensor.ResourceId" />
+                    <input type="hidden" name="selections[@selectionIndex].DeviceType" value="hue.motion-sensor" />
+                    <input type="text" name="selections[@selectionIndex].DisplayName" value="@sensor.Name" aria-label="Display name" />
+                    <select name="selections[@selectionIndex].LocationId" aria-label="Location">
+                            <option value="">No location</option>
+                        @foreach (var location in Model.Locations)
+                        {
+                            <option value="@location.Id">@location.Name</option>
+                        }
+                    </select>
+                    <button type="submit" class="btn btn-sm btn-primary" formaction="?handler=ImportSingle" name="selectionIndex" value="@selectionIndex">Import</button>
+                </td>
+            </tr>
+            selectionIndex++;
+        }
+        </tbody>
+    </table>
+    }
+    </form>
+}
+
+@section Scripts {
+    <script>
+        const selections = document.querySelectorAll(".device-selection");
+        document.getElementById("select-all-devices")?.addEventListener("click", () => {
+            selections.forEach(selection => selection.checked = true);
+        });
+        document.getElementById("deselect-all-devices")?.addEventListener("click", () => {
+            selections.forEach(selection => selection.checked = false);
+        });
+    </script>
 }

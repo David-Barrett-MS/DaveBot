@@ -23,10 +23,21 @@ var stateDirectory = builder.Configuration["DaveBot:StateDirectory"]
 var issuer = new Uri(builder.Configuration["DaveIdentity:Issuer"] ?? "https://brain.daves.tips");
 var speechOptions = SpeechTranscriptionOptions.FromConfiguration(builder.Configuration);
 speechOptions.Validate();
+var earMtlsPort = builder.Configuration.GetValue<int?>("DaveBot:EarMtlsPort") ?? 8443;
+if (earMtlsPort is < 1 or > 65_535 || earMtlsPort == issuer.Port)
+{
+    throw new InvalidOperationException(
+        "DaveBot:EarMtlsPort must be a valid HTTPS port distinct from the UI/OIDC issuer port.");
+}
+MtlsListenerConfiguration.Validate(
+    builder.Configuration,
+    builder.Environment.IsDevelopment(),
+    issuer,
+    earMtlsPort);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ConfigureHttpsDefaults(https => https.ClientCertificateMode = ClientCertificateMode.AllowCertificate);
+    options.ConfigureHttpsDefaults(https => https.ClientCertificateMode = ClientCertificateMode.NoCertificate);
 });
 
 builder.Services.AddRazorPages(options =>
@@ -50,6 +61,9 @@ builder.Services.AddSingleton<IHomeStateStore, HomeStateStore>();
 builder.Services.AddSingleton<HomeDataTransferService>();
 builder.Services.AddSingleton<ICommandAuditStore, InMemoryCommandAuditStore>();
 builder.Services.AddSingleton<ISpeechCommandAuditStore, InMemorySpeechCommandAuditStore>();
+builder.Services.AddSingleton<IAutomationAuditStore, InMemoryAutomationAuditStore>();
+builder.Services.AddSingleton<AutomationConfigurationService>();
+builder.Services.AddSingleton<IAutomationEngine, AutomationEngine>();
 builder.Services.AddSingleton<ISecretStore>(
     provider => new DpapiSecretStore(
         provider.GetRequiredService<IDataProtectionProvider>(),
@@ -60,6 +74,11 @@ builder.Services.AddHttpClient<IHueBridgeClient, HueBridgeClient>(client =>
 });
 builder.Services.AddSingleton<HueHubService>();
 builder.Services.AddSingleton<IDeviceProvider>(provider => provider.GetRequiredService<HueHubService>());
+builder.Services.AddSingleton<HueAutomationHealth>();
+builder.Services.AddSingleton<HueListenerDebugLog>();
+builder.Services.AddSingleton<HueSwitchStateSource>();
+builder.Services.AddSingleton<IDeviceStateSource>(provider => provider.GetRequiredService<HueSwitchStateSource>());
+builder.Services.AddSingleton<IHueSwitchEventSource>(provider => provider.GetRequiredService<HueSwitchStateSource>());
 builder.Services.AddSingleton<ICommandProcessor, CommandProcessor>();
 builder.Services.AddSingleton(speechOptions);
 builder.Services.AddSingleton<WavAudioValidator>();
@@ -70,6 +89,7 @@ builder.Services.AddHttpClient<ITranscriptionService, FoundryLocalTranscriptionS
 builder.Services.AddSingleton<SpeechTranscriptionQueue>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<SpeechTranscriptionQueue>());
 builder.Services.AddHostedService<HueReconciliationService>();
+builder.Services.AddHostedService<HueAutomationIngestionService>();
 builder.Services.AddDaveIdentity(new DaveIdentityOptions
 {
     Issuer = issuer,
@@ -121,25 +141,36 @@ app.Use(async (context, next) =>
 app.UseAuthorization();
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();
-app.MapGet("/health", async (
+async Task<IResult> ReadyHealthAsync(
     IHomeStateStore homeState,
     IdentityStateStore identityState,
     ITranscriptionService transcription,
-    CancellationToken cancellationToken) =>
+    HueAutomationHealth hueAutomation,
+    HueHubService hueHubs,
+    CancellationToken cancellationToken)
 {
     var dependency = await transcription.GetDependencyStatusAsync(cancellationToken);
+    var requiredHueHubIds = hueHubs.GetMappedSwitchHubIds();
+    var requiresHue = requiredHueHubIds.Count > 0;
+    var hueStatus = hueAutomation.GetStatus(requiredHueHubIds);
+    var hueAvailable = !requiresHue ||
+        hueStatus == DeviceOperationStatus.Succeeded;
     var response = new
     {
-        status = dependency.IsAvailable ? "ready" : "unavailable",
+        status = dependency.IsAvailable && hueAvailable ? "ready" : "unavailable",
         homeRevision = homeState.Current.Revision.Value,
         identityRevision = identityState.Current.Revision,
         transcription = dependency.Code,
+        hue = requiresHue ? hueStatus.ToString() : "not-configured",
         model = SpeechTranscriptionOptions.WhisperTinyModel,
     };
-    return dependency.IsAvailable
+    return dependency.IsAvailable && hueAvailable
         ? Results.Ok(response)
         : Results.Json(response, statusCode: StatusCodes.Status503ServiceUnavailable);
-}).AllowAnonymous();
+}
+
+app.MapGet("/health", ReadyHealthAsync).AllowAnonymous();
+app.MapGet("/health/ready", ReadyHealthAsync).AllowAnonymous();
 app.MapPost(
     "/api/v1/ears/enrollments",
     async (
@@ -197,6 +228,7 @@ app.MapPost(
             identityState,
             certificateBinding,
             identityOptions,
+            earMtlsPort,
             cancellationToken);
         if (ear is null)
         {
@@ -237,6 +269,7 @@ app.MapPost(
             identityState,
             certificateBinding,
             identityOptions,
+            earMtlsPort,
             cancellationToken);
         if (ear is null)
         {
@@ -310,6 +343,7 @@ app.MapPost(
             identityState,
             certificateBinding,
             identityOptions,
+            earMtlsPort,
             cancellationToken);
         if (ear is null)
         {
@@ -502,6 +536,9 @@ internal static class SpeechCommandHttp
 
 internal static class EarRequestAuthorization
 {
+    internal static bool IsMtlsListener(HttpContext httpContext, int earMtlsPort) =>
+        httpContext.Connection.LocalPort == earMtlsPort;
+
     public static async Task<EarRecord?> FindAuthorizedEarAsync(
         Guid earId,
         HttpContext httpContext,
@@ -509,8 +546,14 @@ internal static class EarRequestAuthorization
         IdentityStateStore identityState,
         MtlsCertificateBindingValidator certificateBinding,
         DaveIdentityOptions identityOptions,
+        int earMtlsPort,
         CancellationToken cancellationToken)
     {
+        if (!IsMtlsListener(httpContext, earMtlsPort))
+        {
+            return null;
+        }
+
         var ear = await identityState.FindEarAsync(earId, cancellationToken);
         var certificate = await httpContext.Connection.GetClientCertificateAsync(cancellationToken);
         var subject = user.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
@@ -527,4 +570,96 @@ internal static class EarRequestAuthorization
             ? null
             : ear;
     }
+}
+
+internal static class MtlsListenerConfiguration
+{
+    public static void Validate(
+        IConfiguration configuration,
+        bool isDevelopment,
+        Uri issuer,
+        int earMtlsPort)
+    {
+        if (isDevelopment)
+        {
+            return;
+        }
+
+        var endpoints = configuration.GetSection("Kestrel:Endpoints");
+        var earEndpoint = endpoints.GetSection("DaveEarMtls");
+        var endpointUrl = earEndpoint["Url"];
+        if (!Uri.TryCreate(endpointUrl, UriKind.Absolute, out var earEndpointUri) ||
+            !string.Equals(earEndpointUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            earEndpointUri.Port != earMtlsPort)
+        {
+            throw new InvalidOperationException(
+                $"Kestrel:Endpoints:DaveEarMtls:Url must be an HTTPS URL on port {earMtlsPort}.");
+        }
+
+        if (!string.Equals(
+                earEndpoint["ClientCertificateMode"],
+                nameof(ClientCertificateMode.RequireCertificate),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Kestrel:Endpoints:DaveEarMtls:ClientCertificateMode must be RequireCertificate.");
+        }
+
+        var certificate = earEndpoint.GetSection("Certificate");
+        if (string.IsNullOrWhiteSpace(certificate["Subject"]) ||
+            string.IsNullOrWhiteSpace(certificate["Store"]) ||
+            string.IsNullOrWhiteSpace(certificate["Location"]) ||
+            !bool.TryParse(certificate["AllowInvalid"], out var allowInvalid) ||
+            allowInvalid)
+        {
+            throw new InvalidOperationException(
+                "Kestrel:Endpoints:DaveEarMtls must explicitly select a trusted server TLS certificate.");
+        }
+
+        var uiEndpoints = endpoints.GetChildren()
+            .Where(endpoint =>
+                Uri.TryCreate(endpoint["Url"], UriKind.Absolute, out var endpointUri) &&
+                string.Equals(endpointUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                endpointUri.Port == issuer.Port)
+            .ToArray();
+        if (uiEndpoints.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"Kestrel must configure an HTTPS UI/OIDC listener on issuer port {issuer.Port}.");
+        }
+
+        if (uiEndpoints.Any(endpoint =>
+                !string.IsNullOrWhiteSpace(endpoint["ClientCertificateMode"]) &&
+                !string.Equals(
+                    endpoint["ClientCertificateMode"],
+                    nameof(ClientCertificateMode.NoCertificate),
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                "The Kestrel UI/OIDC listener must not request client certificates.");
+        }
+
+        if (!uiEndpoints.Any(endpoint => UsesTrustedSameCertificate(
+                endpoint.GetSection("Certificate"),
+                certificate)))
+        {
+            throw new InvalidOperationException(
+                "The Kestrel UI/OIDC and DaveEar mTLS listeners must select the same server TLS certificate.");
+        }
+    }
+
+    private static bool UsesSameCertificate(
+        IConfigurationSection first,
+        IConfigurationSection second) =>
+        string.Equals(first["Subject"], second["Subject"], StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(first["Store"], second["Store"], StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(first["Location"], second["Location"], StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(first["AllowInvalid"], second["AllowInvalid"], StringComparison.OrdinalIgnoreCase);
+
+    private static bool UsesTrustedSameCertificate(
+        IConfigurationSection first,
+        IConfigurationSection second) =>
+        bool.TryParse(first["AllowInvalid"], out var allowInvalid) &&
+        !allowInvalid &&
+        UsesSameCertificate(first, second);
 }

@@ -11,4 +11,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Content Remove="*.deps.json;*.runtimeconfig.json;*.staticwebassets.endpoints.json;*.dll;*.pdb;*.exe;web.config;wwwroot\DaveBrain.styles.css;wwwroot\**\*.br;wwwroot\**\*.gz" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\Scripts\Install-CrankyServer-DaveBrainCertificate.ps1"
+             Link="Install-DaveBrainHttpsCertificate.ps1">
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

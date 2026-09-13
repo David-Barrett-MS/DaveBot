@@ -23,10 +23,10 @@ public sealed class IndexModel(HueHubService hueHubs, IHomeStateStore homeStateS
         int? brightness,
         CancellationToken cancellationToken)
     {
-        var device = hueHubs.GetMappedLights().SingleOrDefault(candidate => candidate.Id == deviceId);
+        var device = hueHubs.GetMappedHueDevices().SingleOrDefault(candidate => candidate.Id == deviceId);
         if (device is null)
         {
-            ModelState.AddModelError(string.Empty, "The Hue light does not exist.");
+            ModelState.AddModelError(string.Empty, "The Hue device does not exist.");
             LoadDevices();
             return Page();
         }
@@ -73,9 +73,9 @@ public sealed class IndexModel(HueHubService hueHubs, IHomeStateStore homeStateS
             await homeStateStore.UpdateAsync(state =>
             {
                 if (!state.DevicesById.TryGetValue(deviceId, out var device) ||
-                    device.DeviceType != "hue.light")
+                    device.DeviceType is not ("hue.light" or "hue.switch" or "hue.motion-sensor"))
                 {
-                    throw new InvalidOperationException("The Hue light does not exist.");
+                    throw new InvalidOperationException("The Hue device does not exist.");
                 }
 
                 if (locationId is { } assignedLocationId &&
@@ -105,7 +105,16 @@ public sealed class IndexModel(HueHubService hueHubs, IHomeStateStore homeStateS
     public string FormatState(DeviceState? state) =>
         state is null
             ? "Unknown"
-            : $"{(state.IsOn is true ? "On" : "Off")}, {state.Brightness?.ToString() ?? "unknown"}%";
+            : state.Attributes is { } attributes &&
+              attributes.TryGetValue("event", out var eventName)
+                ? $"{eventName} (button {attributes.GetValueOrDefault("button", "unknown")})"
+                : state.Attributes is { } motionAttributes &&
+                  (motionAttributes.ContainsKey("motion") ||
+                   motionAttributes.ContainsKey("motionValid") ||
+                   motionAttributes.ContainsKey("lightLevelAvailable"))
+                    ? $"Motion: {motionAttributes.GetValueOrDefault("motion", "Unknown")}; " +
+                      $"light level: {motionAttributes.GetValueOrDefault("lightLevel", "Unavailable")}"
+                : $"{(state.IsOn is true ? "On" : "Off")}, {state.Brightness?.ToString() ?? "unknown"}%";
 
     private async Task<DeviceOperationResult> SetEnabledAsync(
         Guid deviceId,
@@ -126,7 +135,7 @@ public sealed class IndexModel(HueHubService hueHubs, IHomeStateStore homeStateS
 
     private void LoadDevices()
     {
-        Devices = hueHubs.GetMappedLights();
+        Devices = hueHubs.GetMappedHueDevices();
         Locations = homeStateStore.Current.LocationsById.Values
             .OrderBy(location => location.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();

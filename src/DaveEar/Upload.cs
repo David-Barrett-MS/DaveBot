@@ -28,7 +28,9 @@ public sealed class HttpCommandUploader(
             var audio = new ByteArrayContent(wav.ToArray());
             audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
             form.Add(audio, "audio", $"{segmentId:N}.wav");
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(configuration.Issuer, "/api/v1/speech-commands"))
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                new Uri(configuration.EffectiveMtlsEndpoint, "/api/v1/speech-commands"))
             {
                 Content = form,
             };
@@ -76,8 +78,9 @@ public sealed class HttpCommandUploader(
             using var handler = new HttpClientHandler();
             handler.ClientCertificates.Add(certificate);
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
-            using var request = new HttpRequestMessage(HttpMethod.Post,
-                new Uri(configuration.Issuer, $"/api/v1/ears/{earId:D}/heartbeat"))
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                new Uri(configuration.EffectiveMtlsEndpoint, $"/api/v1/ears/{earId:D}/heartbeat"))
             {
                 Content = new ByteArrayContent([]),
             };

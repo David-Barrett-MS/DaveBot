@@ -1,4 +1,7 @@
-Blink support
 Import locations from Hue (rooms and zones)
 Add scene support
 Import scenes from Hue
+Add Lyrion Music Player support
+Add environment sensor devices (e.g. bedroom Pi)
+Add Philips Air+ support (https://github.com/bartoszj5/ha-philips-airplus)
+Blink support

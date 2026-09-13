@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using DaveBrain;
 using DaveHome;
 
@@ -72,6 +73,163 @@ public sealed class HueHubServiceTests
         Assert.Equal(DeviceOperationStatus.InvalidState, disabledResult.Status);
     }
 
+    [Fact]
+    public async Task LinkSynchronizesClipButtonResourcesAsHueSwitches()
+    {
+        var homeState = new HomeStateStore(new InMemoryHomePersistence());
+        await homeState.InitializeAsync();
+        var service = new HueHubService(
+            homeState,
+            new FakeSecretStore(),
+            new FakeHueBridgeClient(
+                [
+                    new HueSwitchResource(
+                        "button-1",
+                        "Kitchen button",
+                        new DeviceState(
+                            null,
+                            null,
+                            Attributes: new Dictionary<string, string>
+                            {
+                                ["event"] = "initial_press",
+                                ["button"] = "1",
+                            }),
+                        "button-1:2026-01-01T00:00:00Z"),
+                ]));
+
+        var linked = await service.LinkAsync(
+            "Kitchen bridge",
+            new Uri("https://192.168.1.20/"),
+            "bridge-id");
+
+        Assert.Equal(DeviceOperationStatus.Succeeded, linked.Status);
+        Assert.Equal(1, linked.ImportedSwitchCount);
+        var switchDevice = Assert.Single(
+            homeState.Current.Document.Devices,
+            device => device.DeviceType == "hue.switch");
+        Assert.Equal("button-1", switchDevice.ExternalResourceId);
+        Assert.Equal("initial_press", switchDevice.State!.Attributes!["event"]);
+    }
+
+    [Fact]
+    public async Task StreamUpdateMapsToTheImportedSwitchAndPreservesItsButtonControl()
+    {
+        var baseline = new HueSwitchResource(
+            "button-1",
+            "Kitchen button",
+            new DeviceState(
+                null,
+                null,
+                Attributes: new Dictionary<string, string>
+                {
+                    ["event"] = "initial_press",
+                    ["button"] = "1",
+                }),
+            "button-1:2026-01-01T00:00:00Z");
+        var streamUpdate = new HueSwitchResource(
+            "button-1",
+            "Kitchen button",
+            new DeviceState(
+                null,
+                null,
+                Attributes: new Dictionary<string, string>
+                {
+                    ["event"] = "repeat",
+                    ["eventTime"] = "2026-01-01T00:00:01Z",
+                }),
+            "button-1:2026-01-01T00:00:01Z");
+        var homeState = new HomeStateStore(new InMemoryHomePersistence());
+        await homeState.InitializeAsync();
+        var service = new HueHubService(
+            homeState,
+            new FakeSecretStore(),
+            new FakeHueBridgeClient([baseline], [streamUpdate]));
+
+        var linked = await service.LinkAsync(
+            "Kitchen bridge",
+            new Uri("https://192.168.1.20/"),
+            "bridge-id");
+        var mapped = await CollectAsync(service.ReadMappedSwitchEventsAsync(linked.Hub!.Id));
+
+        var update = Assert.Single(mapped);
+        var device = Assert.Single(
+            homeState.Current.Document.Devices,
+            device => device.DeviceType == "hue.switch");
+        Assert.Equal(device.Id, update.DeviceId);
+        Assert.Equal("button-1:2026-01-01T00:00:01Z", update.EventId);
+        Assert.Equal("repeat", update.State.Attributes!["event"]);
+        Assert.Equal("1", update.State.Attributes["button"]);
+    }
+
+    [Fact]
+    public async Task SynchronizesMotionSensorAndMergesLightLevelSseUpdates()
+    {
+        var baseline = new HueMotionSensorResource(
+            "motion-1",
+            "level-1",
+            "Kitchen motion sensor",
+            new DeviceState(
+                null,
+                null,
+                Attributes: new Dictionary<string, string>
+                {
+                    ["motion"] = "false",
+                    ["motionValid"] = "true",
+                    ["lightLevel"] = "2000",
+                    ["lightLevelValid"] = "true",
+                    ["lightLevelAvailable"] = "true",
+                }),
+            "sensor:baseline");
+        var streamUpdate = new HueEventResource(
+            "motion-1",
+            "motion",
+            new DeviceState(
+                null,
+                null,
+                Attributes: new Dictionary<string, string>
+                {
+                    ["motion"] = "true",
+                    ["motionValid"] = "true",
+                }),
+            "sensor-event:motion-1");
+        var homeState = new HomeStateStore(new InMemoryHomePersistence());
+        await homeState.InitializeAsync();
+        var service = new HueHubService(
+            homeState,
+            new FakeSecretStore(),
+            new FakeHueBridgeClient(
+                motionSensors: [baseline],
+                streamResourceUpdates: [streamUpdate]));
+
+        var linked = await service.LinkAsync(
+            "Kitchen bridge",
+            new Uri("https://192.168.1.20/"),
+            "bridge-id");
+        var sensor = Assert.Single(
+            homeState.Current.Document.Devices,
+            device => device.DeviceType == "hue.motion-sensor");
+
+        Assert.Equal(1, linked.ImportedMotionSensorCount);
+        Assert.Equal("Kitchen motion sensor", sensor.Name);
+        Assert.Equal("motion:motion-1;lightLevel:level-1", sensor.ExternalResourceId);
+        var update = Assert.Single(await CollectAsync(service.ReadMappedSwitchEventsAsync(linked.Hub!.Id)));
+        Assert.Equal(sensor.Id, update.DeviceId);
+        Assert.Equal("true", update.State.Attributes!["motion"]);
+        Assert.Equal("2000", update.State.Attributes["lightLevel"]);
+    }
+
+    private static async Task<IReadOnlyList<HueMappedSwitchState>> CollectAsync(
+        IAsyncEnumerable<HueMappedSwitchState> events)
+    {
+        var updates = new List<HueMappedSwitchState>();
+        await foreach (var update in events)
+        {
+            updates.Add(update);
+        }
+
+        return updates;
+    }
+
     private sealed class InMemoryHomePersistence : IHomeStatePersistence
     {
         private HomeStateDocument? _document;
@@ -110,8 +268,21 @@ public sealed class HueHubServiceTests
         }
     }
 
-    private sealed class FakeHueBridgeClient : IHueBridgeClient
+    private sealed class FakeHueBridgeClient(
+        IReadOnlyList<HueSwitchResource>? switches = null,
+        IReadOnlyList<HueSwitchResource>? streamUpdates = null,
+        IReadOnlyList<HueMotionSensorResource>? motionSensors = null,
+        IReadOnlyList<HueEventResource>? streamResourceUpdates = null) : IHueBridgeClient
     {
+        private readonly IReadOnlyList<HueSwitchResource> _switches =
+            switches ?? Array.Empty<HueSwitchResource>();
+        private readonly IReadOnlyList<HueSwitchResource> _streamUpdates =
+            streamUpdates ?? Array.Empty<HueSwitchResource>();
+        private readonly IReadOnlyList<HueMotionSensorResource> _motionSensors =
+            motionSensors ?? Array.Empty<HueMotionSensorResource>();
+        private readonly IReadOnlyList<HueEventResource> _streamResourceUpdates =
+            streamResourceUpdates ?? Array.Empty<HueEventResource>();
+
         public Task<IReadOnlyList<HueBridgeDiscovery>> DiscoverAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<HueBridgeDiscovery>>(Array.Empty<HueBridgeDiscovery>());
@@ -138,6 +309,64 @@ public sealed class HueHubServiceTests
                     "Bridge light",
                     DeviceCapabilities.OnOff | DeviceCapabilities.Brightness,
                     new DeviceState(true, 40))]));
+
+        public Task<HueSwitchQueryResult> GetSwitchesAsync(
+            Uri bridgeAddress,
+            string applicationKey,
+            string? bridgeId = null,
+            string? tlsCertificateThumbprint = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new HueSwitchQueryResult(
+                DeviceOperationStatus.Succeeded,
+                _switches));
+
+        public Task<HueMotionSensorQueryResult> GetMotionSensorsAsync(
+            Uri bridgeAddress,
+            string applicationKey,
+            string? bridgeId = null,
+            string? tlsCertificateThumbprint = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new HueMotionSensorQueryResult(
+                DeviceOperationStatus.Succeeded,
+                _motionSensors));
+
+        public async IAsyncEnumerable<HueSwitchResource> ReadEventStreamAsync(
+            Uri bridgeAddress,
+            string applicationKey,
+            string? bridgeId = null,
+            string? tlsCertificateThumbprint = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var update in _streamUpdates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return update;
+            }
+
+            await Task.CompletedTask;
+        }
+
+        public async IAsyncEnumerable<HueEventResource> ReadEventStreamResourcesAsync(
+            Uri bridgeAddress,
+            string applicationKey,
+            string? bridgeId = null,
+            string? tlsCertificateThumbprint = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var update in _streamResourceUpdates.Count > 0
+                         ? _streamResourceUpdates
+                         : _streamUpdates.Select(update => new HueEventResource(
+                             update.ResourceId,
+                             "button",
+                             update.State,
+                             update.EventId)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return update;
+            }
+
+            await Task.CompletedTask;
+        }
 
         public Task<DeviceOperationResult> GetLightStateAsync(
             Uri bridgeAddress,

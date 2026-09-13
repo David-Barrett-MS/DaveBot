@@ -1,10 +1,10 @@
 @page
 @model DaveBrain.Pages.Devices.IndexModel
 @{
-    ViewData["Title"] = "Devices";
+    ViewData["Title"] = "Hue devices";
 }
 
-<h1>Hue lights</h1>
+<h1>Hue devices</h1>
 <div asp-validation-summary="ModelOnly" class="text-danger"></div>
 @if (Model.Result is not null)
 {
@@ -13,7 +13,7 @@
 
 @if (Model.Devices.Count == 0)
 {
-    <p>No Hue lights are mapped.</p>
+    <p>No Hue devices are mapped.</p>
 }
 else
 {
@@ -23,7 +23,7 @@ else
         @foreach (var device in Model.Devices)
         {
             <tr>
-                <td>@device.Name (@(device.Enabled ? "Enabled" : "Disabled"))</td>
+                <td>@device.Name (@device.DeviceType; @(device.Enabled ? "Enabled" : "Disabled"))</td>
                 <td>
                     <form method="post" asp-page-handler="UpdateLocation">
                         <input type="hidden" name="deviceId" value="@device.Id" />
@@ -55,15 +55,21 @@ else
                     <form method="post">
                         <input type="hidden" name="deviceId" value="@device.Id" />
                         <select name="action" aria-label="Action">
+                            @if (device.DeviceType == "hue.light")
+                            {
                             <option value="read">Read</option>
                             <option value="on">Turn on</option>
                             <option value="off">Turn off</option>
                             <option value="brightness">Set brightness</option>
+                            }
                             <option value="disable">Disable mapping</option>
                             <option value="enable">Enable mapping</option>
                             <option value="remove">Remove mapping</option>
                         </select>
-                        <input type="number" name="brightness" min="0" max="100" aria-label="Brightness" />
+                        @if (device.DeviceType == "hue.light")
+                        {
+                            <input type="number" name="brightness" min="0" max="100" aria-label="Brightness" />
+                        }
                         <button type="submit" class="btn btn-sm btn-primary">Run</button>
                     </form>
                 </td>

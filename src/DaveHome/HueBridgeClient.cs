@@ -5,6 +5,8 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace DaveHome;
 
@@ -30,6 +32,54 @@ public sealed record HueLightQueryResult(
     public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
 }
 
+public sealed record HueSwitchResource(
+    string ResourceId,
+    string Name,
+    DeviceState State,
+    string? EventId);
+
+public sealed record HueSwitchQueryResult(
+    DeviceOperationStatus Status,
+    IReadOnlyList<HueSwitchResource> Switches,
+    string? Detail = null)
+{
+    public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
+}
+
+public sealed record HueMotionSensorResource(
+    string MotionResourceId,
+    string? LightLevelResourceId,
+    string Name,
+    DeviceState State,
+    string? EventId)
+{
+    public string ResourceId => HueMotionSensorResourceReference.Create(
+        MotionResourceId,
+        LightLevelResourceId);
+}
+
+public sealed record HueMotionSensorQueryResult(
+    DeviceOperationStatus Status,
+    IReadOnlyList<HueMotionSensorResource> MotionSensors,
+    string? Detail = null)
+{
+    public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
+}
+
+public sealed record HueEventResource(
+    string ResourceId,
+    string ResourceType,
+    DeviceState State,
+    string? EventId);
+
+public sealed class HueEventStreamException(
+    DeviceOperationStatus status,
+    string? detail = null,
+    Exception? innerException = null) : Exception(detail, innerException)
+{
+    public DeviceOperationStatus Status { get; } = status;
+}
+
 public interface IHueBridgeClient
 {
     Task<IReadOnlyList<HueBridgeDiscovery>> DiscoverAsync(
@@ -46,6 +96,52 @@ public interface IHueBridgeClient
         string? bridgeId = null,
         string? tlsCertificateThumbprint = null,
         CancellationToken cancellationToken = default);
+
+    Task<HueSwitchQueryResult> GetSwitchesAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        CancellationToken cancellationToken = default);
+
+    Task<HueMotionSensorQueryResult> GetMotionSensorsAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new HueMotionSensorQueryResult(
+            DeviceOperationStatus.Succeeded,
+            Array.Empty<HueMotionSensorResource>()));
+
+    IAsyncEnumerable<HueSwitchResource> ReadEventStreamAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        CancellationToken cancellationToken = default);
+
+    async IAsyncEnumerable<HueEventResource> ReadEventStreamResourcesAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var update in ReadEventStreamAsync(
+            bridgeAddress,
+            applicationKey,
+            bridgeId,
+            tlsCertificateThumbprint,
+            cancellationToken))
+        {
+            yield return new HueEventResource(
+                update.ResourceId,
+                "button",
+                update.State,
+                update.EventId);
+        }
+    }
 
     Task<DeviceOperationResult> GetLightStateAsync(
         Uri bridgeAddress,
@@ -239,6 +335,281 @@ public sealed class HueBridgeClient(HttpClient httpClient) : IHueBridgeClient
         }
     }
 
+    public async Task<HueSwitchQueryResult> GetSwitchesAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var result = await SendAsync(
+            HttpMethod.Get,
+            bridgeAddress,
+            bridgeId,
+            tlsCertificateThumbprint,
+            "clip/v2/resource/button",
+            applicationKey,
+            content: null,
+            cancellationToken);
+        if (result.Status != DeviceOperationStatus.Succeeded || result.Document is null)
+        {
+            return new HueSwitchQueryResult(result.Status, Array.Empty<HueSwitchResource>(), result.Detail);
+        }
+
+        using var devices = await SendAsync(
+            HttpMethod.Get,
+            bridgeAddress,
+            bridgeId,
+            tlsCertificateThumbprint,
+            "clip/v2/resource/device",
+            applicationKey,
+            content: null,
+            cancellationToken);
+        if (devices.Status != DeviceOperationStatus.Succeeded || devices.Document is null)
+        {
+            return new HueSwitchQueryResult(
+                devices.Status,
+                Array.Empty<HueSwitchResource>(),
+                devices.Detail);
+        }
+
+        try
+        {
+            return new HueSwitchQueryResult(
+                DeviceOperationStatus.Succeeded,
+                ParseSwitches(result.Document.RootElement, devices.Document.RootElement));
+        }
+        catch (JsonException)
+        {
+            return new HueSwitchQueryResult(
+                DeviceOperationStatus.InvalidState,
+                Array.Empty<HueSwitchResource>(),
+                "The bridge returned an invalid switch response.");
+        }
+    }
+
+    public async Task<HueMotionSensorQueryResult> GetMotionSensorsAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var motions = await SendAsync(
+            HttpMethod.Get,
+            bridgeAddress,
+            bridgeId,
+            tlsCertificateThumbprint,
+            "clip/v2/resource/motion",
+            applicationKey,
+            content: null,
+            cancellationToken);
+        if (motions.Status != DeviceOperationStatus.Succeeded || motions.Document is null)
+        {
+            return new HueMotionSensorQueryResult(
+                motions.Status,
+                Array.Empty<HueMotionSensorResource>(),
+                motions.Detail);
+        }
+
+        using var lightLevels = await SendAsync(
+            HttpMethod.Get,
+            bridgeAddress,
+            bridgeId,
+            tlsCertificateThumbprint,
+            "clip/v2/resource/light_level",
+            applicationKey,
+            content: null,
+            cancellationToken);
+        if (lightLevels.Status is not (
+                DeviceOperationStatus.Succeeded or DeviceOperationStatus.ResourceNotFound))
+        {
+            return new HueMotionSensorQueryResult(
+                lightLevels.Status,
+                Array.Empty<HueMotionSensorResource>(),
+                lightLevels.Detail);
+        }
+
+        using var devices = await SendAsync(
+            HttpMethod.Get,
+            bridgeAddress,
+            bridgeId,
+            tlsCertificateThumbprint,
+            "clip/v2/resource/device",
+            applicationKey,
+            content: null,
+            cancellationToken);
+        if (devices.Status != DeviceOperationStatus.Succeeded || devices.Document is null)
+        {
+            return new HueMotionSensorQueryResult(
+                devices.Status,
+                Array.Empty<HueMotionSensorResource>(),
+                devices.Detail);
+        }
+
+        try
+        {
+            return new HueMotionSensorQueryResult(
+                DeviceOperationStatus.Succeeded,
+                ParseMotionSensors(
+                    motions.Document.RootElement,
+                    lightLevels.Document?.RootElement,
+                    devices.Document.RootElement));
+        }
+        catch (JsonException)
+        {
+            return new HueMotionSensorQueryResult(
+                DeviceOperationStatus.InvalidState,
+                Array.Empty<HueMotionSensorResource>(),
+                "The bridge returned an invalid motion-sensor response.");
+        }
+    }
+
+    public async IAsyncEnumerable<HueSwitchResource> ReadEventStreamAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var connection = await OpenEventStreamAsync(
+            bridgeAddress,
+            applicationKey,
+            bridgeId,
+            tlsCertificateThumbprint,
+            cancellationToken);
+        var reader = new BoundedSseReader(connection.Reader);
+        var data = new StringBuilder();
+        var discardEvent = false;
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (line.IsOverlong)
+            {
+                discardEvent = true;
+                data.Clear();
+                continue;
+            }
+
+            if (line.Value.Length == 0)
+            {
+                if (!discardEvent)
+                {
+                    if (!discardEvent)
+                    {
+                        foreach (var update in ParseEventData(data))
+                        {
+                            yield return update;
+                        }
+                    }
+                }
+
+                data.Clear();
+                discardEvent = false;
+                continue;
+            }
+
+            if (discardEvent || !line.Value.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = line.Value.AsSpan(5).TrimStart();
+            if (data.Length + value.Length + 1 > HueEventStreamParser.MaximumEventDataLength)
+            {
+                data.Clear();
+                discardEvent = true;
+                continue;
+            }
+
+            if (data.Length > 0)
+            {
+                data.Append('\n');
+            }
+
+            data.Append(value);
+        }
+
+        foreach (var update in ParseEventData(data))
+        {
+            yield return update;
+        }
+
+        throw new HueEventStreamException(
+            DeviceOperationStatus.BridgeUnavailable,
+            "The Hue event stream ended.");
+    }
+
+    public async IAsyncEnumerable<HueEventResource> ReadEventStreamResourcesAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId = null,
+        string? tlsCertificateThumbprint = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using var connection = await OpenEventStreamAsync(
+            bridgeAddress,
+            applicationKey,
+            bridgeId,
+            tlsCertificateThumbprint,
+            cancellationToken);
+        var reader = new BoundedSseReader(connection.Reader);
+        var data = new StringBuilder();
+        var discardEvent = false;
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (line.IsOverlong)
+            {
+                discardEvent = true;
+                data.Clear();
+                continue;
+            }
+
+            if (line.Value.Length == 0)
+            {
+                if (!discardEvent)
+                {
+                    foreach (var update in ParseEventResources(data))
+                    {
+                        yield return update;
+                    }
+                }
+
+                data.Clear();
+                discardEvent = false;
+                continue;
+            }
+
+            if (discardEvent || !line.Value.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = line.Value.AsSpan(5).TrimStart();
+            if (data.Length + value.Length + 1 > HueEventStreamParser.MaximumEventDataLength)
+            {
+                data.Clear();
+                discardEvent = true;
+                continue;
+            }
+
+            if (data.Length > 0)
+            {
+                data.Append('\n');
+            }
+
+            data.Append(value);
+        }
+
+        foreach (var update in ParseEventResources(data))
+        {
+            yield return update;
+        }
+
+        throw new HueEventStreamException(
+            DeviceOperationStatus.BridgeUnavailable,
+            "The Hue event stream ended.");
+    }
+
     public async Task<DeviceOperationResult> GetLightStateAsync(
         Uri bridgeAddress,
         string applicationKey,
@@ -332,6 +703,89 @@ public sealed class HueBridgeClient(HttpClient httpClient) : IHueBridgeClient
             cancellationToken);
     }
 
+    private async Task<HueEventStreamConnection> OpenEventStreamAsync(
+        Uri bridgeAddress,
+        string applicationKey,
+        string? bridgeId,
+        string? tlsCertificateThumbprint,
+        CancellationToken cancellationToken)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            CreateUri(bridgeAddress, bridgeId, "eventstream/clip/v2"));
+        request.Headers.Add("hue-application-key", applicationKey);
+        request.Headers.Accept.ParseAdd("text/event-stream");
+
+        HueBridgeHttpClient? bridgeConnection = null;
+        HttpResponseMessage? response = null;
+        try
+        {
+            bridgeConnection = CreateBridgeHttpClient(
+                bridgeAddress,
+                bridgeId,
+                tlsCertificateThumbprint,
+                allowTrustOnFirstUse: false);
+            response = await (bridgeConnection?.Client ?? httpClient).SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HueEventStreamException(
+                    MapStatus(response.StatusCode),
+                    $"The Hue event stream returned HTTP {(int)response.StatusCode}.");
+            }
+
+            var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            return new HueEventStreamConnection(
+                request,
+                response,
+                bridgeConnection,
+                new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            request.Dispose();
+            response?.Dispose();
+            bridgeConnection?.Dispose();
+            throw;
+        }
+        catch (HueEventStreamException)
+        {
+            request.Dispose();
+            response?.Dispose();
+            bridgeConnection?.Dispose();
+            throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            request.Dispose();
+            response?.Dispose();
+            bridgeConnection?.Dispose();
+            throw new HueEventStreamException(
+                DeviceOperationStatus.TimedOut,
+                "The Hue event stream did not respond within the configured timeout.",
+                exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            request.Dispose();
+            response?.Dispose();
+            bridgeConnection?.Dispose();
+            throw new HueEventStreamException(
+                DeviceOperationStatus.BridgeUnavailable,
+                "Unable to connect to the Hue event stream.",
+                exception);
+        }
+        catch
+        {
+            request.Dispose();
+            response?.Dispose();
+            bridgeConnection?.Dispose();
+            throw;
+        }
+    }
+
     private async Task<HueResponse> SendAsync(
         HttpMethod method,
         Uri bridgeAddress,
@@ -383,6 +837,40 @@ public sealed class HueBridgeClient(HttpClient httpClient) : IHueBridgeClient
             return new HueResponse(
                 DeviceOperationStatus.InvalidState,
                 Detail: "The bridge returned an invalid response.");
+        }
+    }
+
+    private static IReadOnlyList<HueSwitchResource> ParseEventData(StringBuilder data)
+    {
+        if (data.Length == 0)
+        {
+            return Array.Empty<HueSwitchResource>();
+        }
+
+        try
+        {
+            return HueEventStreamParser.Parse(data.ToString());
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<HueSwitchResource>();
+        }
+    }
+
+    private static IReadOnlyList<HueEventResource> ParseEventResources(StringBuilder data)
+    {
+        if (data.Length == 0)
+        {
+            return Array.Empty<HueEventResource>();
+        }
+
+        try
+        {
+            return HueEventStreamParser.ParseResources(data.ToString());
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<HueEventResource>();
         }
     }
 
@@ -443,6 +931,301 @@ public sealed class HueBridgeClient(HttpClient httpClient) : IHueBridgeClient
                 new DeviceState(isOn, brightness, colour));
         }).ToArray();
     }
+
+    private static IReadOnlyList<HueSwitchResource> ParseSwitches(
+        JsonElement root,
+        JsonElement devicesRoot)
+    {
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("Hue response is missing its data array.");
+        }
+
+        var devices = ParseDevices(devicesRoot);
+        return data.EnumerateArray().Select(buttonResource =>
+        {
+            var resourceId = GetString(buttonResource, "id")
+                ?? throw new JsonException("Hue switch button is missing its ID.");
+            if (!buttonResource.TryGetProperty("button", out var button) ||
+                button.ValueKind != JsonValueKind.Object)
+            {
+                throw new JsonException("Hue switch button is missing state.");
+            }
+
+            var eventName = GetString(button, "last_event");
+            var eventTime = GetString(button, "last_event_date");
+            var controlId = GetControlId(buttonResource);
+            var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (!string.IsNullOrWhiteSpace(controlId))
+            {
+                attributes["button"] = controlId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(eventName))
+            {
+                attributes["event"] = eventName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(eventTime))
+            {
+                attributes["eventTime"] = eventTime;
+            }
+
+            var ownerDeviceId = GetOwnerDeviceId(buttonResource);
+            if (ownerDeviceId is null)
+            {
+                var owningDevices = devices
+                    .Where(pair => pair.Value.ServiceResourceIds.Contains(resourceId))
+                    .Select(pair => pair.Key)
+                    .Take(2)
+                    .ToArray();
+                ownerDeviceId = owningDevices.Length == 1 ? owningDevices[0] : null;
+            }
+
+            devices.TryGetValue(ownerDeviceId ?? string.Empty, out var ownerDevice);
+            var buttonName = GetMetadataName(buttonResource);
+            var deviceName = ownerDevice?.Name;
+            var name = !string.IsNullOrWhiteSpace(deviceName)
+                ? $"{deviceName} - {GetButtonName(controlId, buttonName, resourceId)}"
+                : buttonName ?? (string.IsNullOrWhiteSpace(controlId)
+                    ? $"Hue switch {resourceId}"
+                    : $"Hue switch button {controlId}");
+            var eventId = !string.IsNullOrWhiteSpace(eventName) &&
+                !string.IsNullOrWhiteSpace(eventTime)
+                ? $"{resourceId}:{eventTime}"
+                : null;
+            return new HueSwitchResource(
+                resourceId,
+                name,
+                new DeviceState(null, null, Attributes: attributes),
+                eventId);
+        }).ToArray();
+    }
+
+    private static IReadOnlyList<HueMotionSensorResource> ParseMotionSensors(
+        JsonElement motionsRoot,
+        JsonElement? lightLevelsRoot,
+        JsonElement devicesRoot)
+    {
+        var devices = ParseDevices(devicesRoot);
+
+        var lightLevels = lightLevelsRoot is { } root
+            ? GetData(root)
+                .Select(lightLevel => new MotionSensorLightLevel(
+                    GetString(lightLevel, "id")
+                        ?? throw new JsonException("Hue light-level resource is missing its ID."),
+                    GetOwnerDeviceId(lightLevel),
+                    lightLevel))
+                .ToArray()
+            : Array.Empty<MotionSensorLightLevel>();
+        var sensors = new List<HueMotionSensorResource>();
+        var motionResourceIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var motion in GetData(motionsRoot))
+        {
+            var motionResourceId = GetString(motion, "id")
+                ?? throw new JsonException("Hue motion resource is missing its ID.");
+            if (!motionResourceIds.Add(motionResourceId))
+            {
+                throw new JsonException("Hue motion resource IDs must be unique.");
+            }
+            var ownerDeviceId = GetOwnerDeviceId(motion);
+            if (ownerDeviceId is null)
+            {
+                var owningDevices = devices
+                    .Where(pair => pair.Value.ServiceResourceIds.Contains(motionResourceId))
+                    .Select(pair => pair.Key)
+                    .Take(2)
+                    .ToArray();
+                ownerDeviceId = owningDevices.Length == 1 ? owningDevices[0] : null;
+            }
+
+            devices.TryGetValue(ownerDeviceId ?? string.Empty, out var ownerDevice);
+            var lightLevel = lightLevels
+                .Where(candidate =>
+                    string.Equals(candidate.OwnerDeviceId, ownerDeviceId, StringComparison.Ordinal) ||
+                    (ownerDevice is not null &&
+                     ownerDevice.ServiceResourceIds.Contains(candidate.ResourceId)))
+                .OrderBy(candidate => candidate.ResourceId, StringComparer.Ordinal)
+                .FirstOrDefault();
+            var state = CreateMotionSensorState(motion, lightLevel?.Resource);
+            var name = ownerDevice?.Name ?? GetMetadataName(motion) ??
+                $"Hue motion sensor {motionResourceId}";
+            try
+            {
+                var resourceReference = HueMotionSensorResourceReference.Create(
+                    motionResourceId,
+                    lightLevel?.ResourceId);
+                sensors.Add(new HueMotionSensorResource(
+                    motionResourceId,
+                    lightLevel?.ResourceId,
+                    name,
+                    state,
+                    CreateSensorSnapshotEventId(resourceReference, state)));
+            }
+            catch (ArgumentException exception)
+            {
+                throw new JsonException("Hue motion sensor resource IDs are invalid.", exception);
+            }
+        }
+
+        return sensors;
+    }
+
+    private static IEnumerable<JsonElement> GetData(JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("Hue response is missing its data array.");
+        }
+
+        return data.EnumerateArray().ToArray();
+    }
+
+    private static IReadOnlyDictionary<string, HueDevice> ParseDevices(JsonElement root)
+    {
+        var devices = new Dictionary<string, HueDevice>(StringComparer.Ordinal);
+        foreach (var device in GetData(root))
+        {
+            var id = GetString(device, "id")
+                ?? throw new JsonException("Hue device is missing its ID.");
+            if (!devices.TryAdd(
+                    id,
+                    new HueDevice(
+                        GetMetadataName(device),
+                        GetServiceResourceIds(device))))
+            {
+                throw new JsonException("Hue device IDs must be unique.");
+            }
+        }
+
+        return devices;
+    }
+
+    private static DeviceState CreateMotionSensorState(
+        JsonElement motionResource,
+        JsonElement? lightLevelResource)
+    {
+        var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (motionResource.TryGetProperty("motion", out var motion) &&
+            motion.ValueKind == JsonValueKind.Object)
+        {
+            AddBooleanAttribute(motion, "motion_valid", "motionValid", attributes);
+            var motionValid = GetBoolean(motion, "motion_valid");
+            if (GetBoolean(motion, "motion") is { } detected && motionValid is not false)
+            {
+                attributes["motion"] = detected ? "true" : "false";
+            }
+        }
+
+        attributes["lightLevelAvailable"] = lightLevelResource is null ? "false" : "true";
+        if (lightLevelResource is { } resource &&
+            resource.TryGetProperty("light_level", out var lightLevel) &&
+            lightLevel.ValueKind == JsonValueKind.Object)
+        {
+            AddBooleanAttribute(lightLevel, "light_level_valid", "lightLevelValid", attributes);
+            var levelValid = GetBoolean(lightLevel, "light_level_valid");
+            if (lightLevel.TryGetProperty("light_level", out var value) &&
+                value.TryGetInt32(out var reportedLevel) &&
+                reportedLevel is >= 0 and <= 65_535 &&
+                levelValid is not false)
+            {
+                attributes["lightLevel"] = reportedLevel.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        return new DeviceState(null, null, Attributes: attributes);
+    }
+
+    private static void AddBooleanAttribute(
+        JsonElement resource,
+        string sourceName,
+        string attributeName,
+        IDictionary<string, string> attributes)
+    {
+        if (GetBoolean(resource, sourceName) is { } value)
+        {
+            attributes[attributeName] = value ? "true" : "false";
+        }
+    }
+
+    private static bool? GetBoolean(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) &&
+        value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
+
+    private static string? GetMetadataName(JsonElement resource) =>
+        resource.TryGetProperty("metadata", out var metadata) &&
+        metadata.ValueKind == JsonValueKind.Object
+            ? GetString(metadata, "name")
+            : null;
+
+    private static string? GetOwnerDeviceId(JsonElement resource) =>
+        resource.TryGetProperty("owner", out var owner) &&
+        owner.ValueKind == JsonValueKind.Object &&
+        string.Equals(GetString(owner, "rtype"), "device", StringComparison.Ordinal) &&
+        GetString(owner, "rid") is { } ownerId
+            ? ownerId
+            : null;
+
+    private static IReadOnlySet<string> GetServiceResourceIds(JsonElement device)
+    {
+        if (!device.TryGetProperty("services", out var services) ||
+            services.ValueKind != JsonValueKind.Array)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        return services.EnumerateArray()
+            .Select(service => GetString(service, "rid"))
+            .Where(resourceId => !string.IsNullOrWhiteSpace(resourceId))
+            .Cast<string>()
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static string CreateSensorSnapshotEventId(string resourceReference, DeviceState state)
+    {
+        var canonicalState = state.Attributes is null
+            ? string.Empty
+            : string.Join(
+                ';',
+                state.Attributes
+                    .OrderBy(attribute => attribute.Key, StringComparer.Ordinal)
+                    .Select(attribute => $"{attribute.Key}={attribute.Value}"));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{resourceReference}|{canonicalState}"));
+        return $"sensor:{Convert.ToHexString(hash)}";
+    }
+
+    private sealed record HueDevice(
+        string? Name,
+        IReadOnlySet<string> ServiceResourceIds);
+
+    private sealed record MotionSensorLightLevel(
+        string ResourceId,
+        string? OwnerDeviceId,
+        JsonElement Resource);
+
+    private static string? GetControlId(JsonElement resource)
+    {
+        if (!resource.TryGetProperty("metadata", out var metadata) ||
+            !metadata.TryGetProperty("control_id", out var controlId))
+        {
+            return null;
+        }
+
+        return controlId.ValueKind switch
+        {
+            JsonValueKind.String => controlId.GetString(),
+            JsonValueKind.Number when controlId.TryGetInt32(out var number) =>
+                number.ToString(CultureInfo.InvariantCulture),
+            _ => null,
+        };
+    }
+
+    private static string GetButtonName(string? controlId, string? buttonName, string resourceId) =>
+        !string.IsNullOrWhiteSpace(controlId)
+            ? $"Button {controlId}"
+            : buttonName ?? $"Button {resourceId}";
 
     private static string? GetString(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var property) &&
@@ -600,6 +1383,97 @@ public sealed class HueBridgeClient(HttpClient httpClient) : IHueBridgeClient
         public void Dispose() => client.Dispose();
     }
 
+    private sealed class HueEventStreamConnection(
+        HttpRequestMessage request,
+        HttpResponseMessage response,
+        HueBridgeHttpClient? bridgeConnection,
+        StreamReader reader) : IDisposable
+    {
+        public StreamReader Reader => reader;
+
+        public void Dispose()
+        {
+            reader.Dispose();
+            response.Dispose();
+            bridgeConnection?.Dispose();
+            request.Dispose();
+        }
+    }
+
+    private sealed class BoundedSseReader(StreamReader reader)
+    {
+        private static readonly TimeSpan InactivityTimeout = TimeSpan.FromSeconds(90);
+        private const int BufferLength = 4096;
+        private const int MaximumPhysicalLineLength = HueEventStreamParser.MaximumEventDataLength;
+
+        private readonly char[] _buffer = new char[BufferLength];
+        private int _bufferOffset;
+        private int _bufferLength;
+
+        public async ValueTask<SseLine?> ReadLineAsync(CancellationToken cancellationToken)
+        {
+            var line = new StringBuilder();
+            var isOverlong = false;
+            while (true)
+            {
+                var character = await ReadCharacterAsync(cancellationToken);
+                if (character is null)
+                {
+                    return line.Length == 0 && !isOverlong
+                        ? null
+                        : new SseLine(line.ToString(), isOverlong);
+                }
+
+                if (character == '\n')
+                {
+                    return new SseLine(line.ToString(), isOverlong);
+                }
+
+                if (character == '\r')
+                {
+                    continue;
+                }
+
+                if (line.Length == MaximumPhysicalLineLength)
+                {
+                    isOverlong = true;
+                    continue;
+                }
+
+                line.Append(character.Value);
+            }
+        }
+
+        private async ValueTask<char?> ReadCharacterAsync(CancellationToken cancellationToken)
+        {
+            if (_bufferOffset == _bufferLength)
+            {
+                using var inactivityCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
+                inactivityCancellation.CancelAfter(InactivityTimeout);
+                try
+                {
+                    _bufferLength = await reader.ReadAsync(
+                        _buffer.AsMemory(),
+                        inactivityCancellation.Token);
+                    _bufferOffset = 0;
+                }
+                catch (OperationCanceledException exception)
+                    when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new HueEventStreamException(
+                        DeviceOperationStatus.TimedOut,
+                        "The Hue event stream became inactive.",
+                        exception);
+                }
+            }
+
+            return _bufferLength == 0 ? null : _buffer[_bufferOffset++];
+        }
+
+        public sealed record SseLine(string Value, bool IsOverlong);
+    }
+
     private sealed class HueBridgeCertificateValidator(
         string bridgeId,
         string? expectedCertificateThumbprint,
@@ -674,4 +1548,258 @@ public sealed class HueBridgeClient(HttpClient httpClient) : IHueBridgeClient
     {
         public void Dispose() => Document?.Dispose();
     }
+}
+
+public static class HueEventStreamParser
+{
+    public const int MaximumEventDataLength = 65_536;
+    private const int MaximumResourcesPerEvent = 500;
+
+    public static IReadOnlyList<HueSwitchResource> Parse(string eventData)
+    {
+        return ParseResources(eventData)
+            .Where(resource => resource.ResourceType == "button")
+            .Select(resource => new HueSwitchResource(
+                resource.ResourceId,
+                $"Hue switch {resource.ResourceId}",
+                resource.State,
+                resource.EventId))
+            .ToArray();
+    }
+
+    public static IReadOnlyList<HueEventResource> ParseResources(string eventData)
+    {
+        if (string.IsNullOrWhiteSpace(eventData) || eventData.Length > MaximumEventDataLength)
+        {
+            return Array.Empty<HueEventResource>();
+        }
+
+        using var document = JsonDocument.Parse(eventData, new JsonDocumentOptions { MaxDepth = 16 });
+        var resources = new List<HueEventResource>();
+        CollectResources(document.RootElement, inheritedEventTime: null, resources);
+        return resources;
+    }
+
+    private static void CollectResources(
+        JsonElement element,
+        string? inheritedEventTime,
+        ICollection<HueEventResource> resources)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    CollectResources(item, inheritedEventTime, resources);
+                }
+
+                return;
+
+            case JsonValueKind.Object:
+                var eventTime = GetString(element, "creationtime") ?? inheritedEventTime;
+                if (IsButtonResource(element))
+                {
+                    if (resources.Count < MaximumResourcesPerEvent)
+                    {
+                        resources.Add(ParseButtonResource(element));
+                    }
+
+                    return;
+                }
+
+                if (IsMotionResource(element))
+                {
+                    if (resources.Count < MaximumResourcesPerEvent)
+                    {
+                        resources.Add(ParseMotionResource(element, eventTime));
+                    }
+
+                    return;
+                }
+
+                if (IsLightLevelResource(element))
+                {
+                    if (resources.Count < MaximumResourcesPerEvent)
+                    {
+                        resources.Add(ParseLightLevelResource(element, eventTime));
+                    }
+
+                    return;
+                }
+
+                if (element.TryGetProperty("data", out var data) &&
+                    data.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in data.EnumerateArray())
+                    {
+                        CollectResources(item, eventTime, resources);
+                    }
+                }
+
+                return;
+
+            default:
+                return;
+        }
+    }
+
+    private static bool IsButtonResource(JsonElement resource) =>
+        resource.TryGetProperty("type", out var type) &&
+        type.ValueKind == JsonValueKind.String &&
+        string.Equals(type.GetString(), "button", StringComparison.Ordinal) &&
+        resource.TryGetProperty("button", out var button) &&
+        button.ValueKind == JsonValueKind.Object;
+
+    private static bool IsMotionResource(JsonElement resource) =>
+        resource.TryGetProperty("type", out var type) &&
+        type.ValueKind == JsonValueKind.String &&
+        string.Equals(type.GetString(), "motion", StringComparison.Ordinal) &&
+        resource.TryGetProperty("motion", out var motion) &&
+        motion.ValueKind == JsonValueKind.Object;
+
+    private static bool IsLightLevelResource(JsonElement resource) =>
+        resource.TryGetProperty("type", out var type) &&
+        type.ValueKind == JsonValueKind.String &&
+        string.Equals(type.GetString(), "light_level", StringComparison.Ordinal) &&
+        resource.TryGetProperty("light_level", out var lightLevel) &&
+        lightLevel.ValueKind == JsonValueKind.Object;
+
+    private static HueEventResource ParseButtonResource(JsonElement buttonResource)
+    {
+        var resourceId = GetString(buttonResource, "id")
+            ?? throw new JsonException("Hue switch button event is missing its ID.");
+        var button = buttonResource.GetProperty("button");
+        var eventName = GetString(button, "last_event");
+        var eventTime = GetString(button, "last_event_date");
+        var controlId = GetControlId(buttonResource);
+        var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(controlId))
+        {
+            attributes["button"] = controlId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(eventName))
+        {
+            attributes["event"] = eventName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(eventTime))
+        {
+            attributes["eventTime"] = eventTime;
+        }
+
+        return new HueEventResource(
+            resourceId,
+            "button",
+            new DeviceState(null, null, Attributes: attributes),
+            !string.IsNullOrWhiteSpace(eventName) && !string.IsNullOrWhiteSpace(eventTime)
+                ? $"{resourceId}:{eventTime}"
+                : null);
+    }
+
+    private static HueEventResource ParseMotionResource(
+        JsonElement motionResource,
+        string? eventTime)
+    {
+        var resourceId = GetString(motionResource, "id")
+            ?? throw new JsonException("Hue motion event is missing its ID.");
+        var motion = motionResource.GetProperty("motion");
+        var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+        AddBooleanAttribute(motion, "motion_valid", "motionValid", attributes);
+        var motionValid = GetBoolean(motion, "motion_valid");
+        if (GetBoolean(motion, "motion") is { } detected && motionValid is not false)
+        {
+            attributes["motion"] = detected ? "true" : "false";
+        }
+
+        return new HueEventResource(
+            resourceId,
+            "motion",
+            new DeviceState(null, null, Attributes: attributes),
+            CreateSensorEventId(resourceId, eventTime, attributes));
+    }
+
+    private static HueEventResource ParseLightLevelResource(
+        JsonElement lightLevelResource,
+        string? eventTime)
+    {
+        var resourceId = GetString(lightLevelResource, "id")
+            ?? throw new JsonException("Hue light-level event is missing its ID.");
+        var lightLevel = lightLevelResource.GetProperty("light_level");
+        var attributes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["lightLevelAvailable"] = "true",
+        };
+        AddBooleanAttribute(lightLevel, "light_level_valid", "lightLevelValid", attributes);
+        var levelValid = GetBoolean(lightLevel, "light_level_valid");
+        if (lightLevel.TryGetProperty("light_level", out var value) &&
+            value.TryGetInt32(out var reportedLevel) &&
+            reportedLevel is >= 0 and <= 65_535 &&
+            levelValid is not false)
+        {
+            attributes["lightLevel"] = reportedLevel.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return new HueEventResource(
+            resourceId,
+            "light_level",
+            new DeviceState(null, null, Attributes: attributes),
+            CreateSensorEventId(resourceId, eventTime, attributes));
+    }
+
+    private static string CreateSensorEventId(
+        string resourceId,
+        string? eventTime,
+        IReadOnlyDictionary<string, string> attributes)
+    {
+        var canonicalAttributes = string.Join(
+            ';',
+            attributes
+                .OrderBy(attribute => attribute.Key, StringComparer.Ordinal)
+                .Select(attribute => $"{attribute.Key}={attribute.Value}"));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{resourceId}|{eventTime ?? string.Empty}|{canonicalAttributes}"));
+        return $"sensor-event:{Convert.ToHexString(hash)}";
+    }
+
+    private static void AddBooleanAttribute(
+        JsonElement resource,
+        string sourceName,
+        string attributeName,
+        IDictionary<string, string> attributes)
+    {
+        if (GetBoolean(resource, sourceName) is { } value)
+        {
+            attributes[attributeName] = value ? "true" : "false";
+        }
+    }
+
+    private static bool? GetBoolean(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) &&
+        value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
+
+    private static string? GetControlId(JsonElement resource)
+    {
+        if (!resource.TryGetProperty("metadata", out var metadata) ||
+            !metadata.TryGetProperty("control_id", out var controlId))
+        {
+            return null;
+        }
+
+        return controlId.ValueKind switch
+        {
+            JsonValueKind.String => controlId.GetString(),
+            JsonValueKind.Number when controlId.TryGetInt32(out var number) =>
+                number.ToString(CultureInfo.InvariantCulture),
+            _ => null,
+        };
+    }
+
+    private static string? GetString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var property) &&
+        property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
 }

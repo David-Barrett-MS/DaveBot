@@ -65,9 +65,10 @@ certificate. DaveBrain accepts an Ear request only when:
 4. The token issuer, subject, client ID, scope, certificate thumbprint, and
    Ear ID match the enrollment record.
 
-Configure Kestrel to request client certificates and require them only for Ear
-token/resource endpoints. Browser, administration, discovery, and device-code
-verification routes remain server-TLS-only.
+Configure separate Kestrel listeners with the same server TLS certificate:
+port 443 does not request client certificates and serves browser,
+administration, discovery, device-code, and enrollment routes; port 8443
+requires client certificates and serves Ear token refresh/resource routes.
 
 Pin a current supported OpenIddict version centrally in Phase 1. Before
 release, verify the selected version's Device Authorization Grant, mutual TLS

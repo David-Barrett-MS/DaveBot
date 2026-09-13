@@ -15,7 +15,8 @@ internet.
 | Setting | Value |
 |---|---|
 | Public name and OIDC issuer | `https://brain.daves.tips` |
-| HTTPS port | `443` |
+| Browser/OIDC HTTPS port | `443` |
+| DaveEar mTLS HTTPS port | `8443` |
 | DaveBrain host | Windows Server 2019 x64 or later |
 | Windows Service identity | `NT SERVICE\DaveBrain` |
 | TLS | Self-signed certificate for `brain.daves.tips` |
@@ -38,7 +39,9 @@ readable only by the DaveBrain service identity.
 Browsers
   | HTTPS: Razor Pages and OIDC sign-in/consent
   v
-DaveBrain (Windows Service, port 443)
+DaveBrain (Windows Service)
+  |-- Browser/OIDC HTTPS, port 443
+  |-- DaveEar mTLS HTTPS, port 8443
   |-- DaveIdentity: local accounts and OAuth/OIDC authority
   |-- DaveHome: commands, locations, devices, actions, triggers, Hue adapter
   |-- Foundry Local: Whisper Tiny transcription over loopback
@@ -57,6 +60,36 @@ Whisper Tiny is the only model in the DaveBot runtime and is used solely to
 transcribe speech. Command parsing, command responses, and automation are
 custom deterministic code; no chat, natural-language, or other general-purpose
 model is run.
+
+## Hue event automation
+
+Hue CLIP v2 button resources are imported as `hue.switch` devices. Motion and
+associated ambient-light resources are imported together as one
+`hue.motion-sensor` device, using the Hue device metadata name where available.
+Its deterministic attributes are `motion` and `lightLevel` (plus availability
+and validity attributes when Hue reports them). A bounded CLIP v2 Server-Sent
+Events stream at `/eventstream/clip/v2` is the primary source for every mapped,
+enabled Hue hub. Each hub has an independent
+long-lived stream, authenticated with its Hue application key and using the
+same bridge-ID hostname routing and pinned-certificate validation as normal
+CLIP requests. Event batches are bounded, button/motion/light-level updates are
+normalized and merged into stable `DeviceStateChanged` IDs, and a
+reconciliation establishes the current baseline before a stream is accepted
+and after every reconnect. This prevents an initial stream snapshot, a
+reconnect, or a newly mapped source from triggering historic automation.
+
+An ended or failed stream reconnects with a bounded exponential backoff. Only
+after three consecutive stream failures is the one-second polling reader used,
+and then only for the bounded wait until the next stream attempt; it first
+reconciles and suppresses the current event. Polling never runs while a stream
+is available, and the service continues trying to restore the stream. The
+automation engine selects enabled triggers for the source, evaluates strict
+state criteria, deduplicates the source/event ID, applies a bounded cooldown
+cache, and runs declared action sets/actions in order. Its only action type is
+deterministic `device.setState`; it resolves a registered device provider and
+validates the target capability. The engine holds only bounded deduplication,
+cooldown, and audit history and never stores bridge credentials or payloads in
+that history.
 
 ## Solution and dependency graph
 
@@ -109,9 +142,10 @@ confidential client secret are protected with DPAPI for
 `NT SERVICE\DaveBrain`.
 
 The Ear client-certificate authority is separate from the self-signed
-server-TLS and OAuth token-signing certificates. Kestrel requests client
-certificates and DaveIdentity requires a valid, non-revoked Ear certificate
-only on Ear token/resource endpoints.
+server-TLS and OAuth token-signing certificates. Kestrel does not request a
+client certificate on the browser/OIDC listener at port 443. A separate
+port-8443 DaveEar listener uses the same server TLS certificate and requires
+a valid, non-revoked Ear certificate for Ear token/resource endpoints.
 
 ## Persistence architecture
 

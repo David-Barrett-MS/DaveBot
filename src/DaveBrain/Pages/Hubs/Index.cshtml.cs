@@ -8,7 +8,9 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 namespace DaveBrain.Pages.Hubs;
 
 [Authorize(Policy = DaveIdentityPolicies.HubManagement)]
-public sealed class IndexModel(HueHubService hueHubs) : PageModel
+public sealed class IndexModel(
+    HueHubService hueHubs,
+    HueListenerDebugLog listenerDebugLog) : PageModel
 {
     public IReadOnlyList<Hub> Hubs { get; private set; } = Array.Empty<Hub>();
 
@@ -31,6 +33,12 @@ public sealed class IndexModel(HueHubService hueHubs) : PageModel
     public string? BridgeId { get; set; }
 
     public void OnGet() => LoadHubs();
+
+    public IActionResult OnGetListenerEvents(long after = 0)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return new JsonResult(listenerDebugLog.ReadAfter(Math.Max(0, after)));
+    }
 
     public async Task<IActionResult> OnPostDiscoverAsync(CancellationToken cancellationToken)
     {
@@ -59,7 +67,8 @@ public sealed class IndexModel(HueHubService hueHubs) : PageModel
         }
 
         TempData["StatusMessage"] =
-            $"Bridge linked. Imported {result.ImportedLightCount} new Hue light(s).";
+            $"Bridge linked. Imported {result.ImportedLightCount} new Hue light(s) and " +
+            $"{result.ImportedSwitchCount} Hue switch button(s).";
         return RedirectToPage();
     }
 

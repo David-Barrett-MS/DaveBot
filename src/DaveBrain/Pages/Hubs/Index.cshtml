@@ -74,3 +74,88 @@ else
         </tbody>
     </table>
 }
+
+<section class="mt-5" aria-labelledby="listener-debug-heading">
+    <div class="d-flex align-items-center gap-3 mb-2">
+        <h2 id="listener-debug-heading" class="mb-0">Hue listener debug</h2>
+        <button type="button" class="btn btn-outline-secondary" id="toggle-listener-debug"
+                aria-controls="listener-debug-output" aria-pressed="false">
+            Enable event display
+        </button>
+    </div>
+    <p id="listener-debug-status">Event display is disabled.</p>
+    <pre id="listener-debug-output" class="border rounded p-3 bg-light" hidden aria-live="polite"></pre>
+</section>
+
+@section Scripts {
+    <script>
+        (() => {
+            const toggle = document.getElementById("toggle-listener-debug");
+            const status = document.getElementById("listener-debug-status");
+            const output = document.getElementById("listener-debug-output");
+            let enabled = false;
+            let latestSequence = 0;
+            let timer;
+            let requestInFlight = false;
+
+            const formatEvent = event => {
+                const received = new Date(event.receivedAt).toLocaleTimeString();
+                const attributes = Object.entries(event.attributes ?? {})
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join(", ");
+                return `[${received}] ${event.deviceName}: ${event.eventId || "state update"}${attributes ? ` (${attributes})` : ""}`;
+            };
+
+            const readEvents = async () => {
+                if (!enabled || requestInFlight) {
+                    return;
+                }
+
+                requestInFlight = true;
+                try {
+                    const response = await fetch(`?handler=ListenerEvents&after=${latestSequence}`, {
+                        cache: "no-store",
+                        credentials: "same-origin"
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const snapshot = await response.json();
+                    for (const event of snapshot.events) {
+                        output.textContent += `${formatEvent(event)}\n`;
+                    }
+                    latestSequence = snapshot.latestSequence;
+                    output.scrollTop = output.scrollHeight;
+                    if (enabled) {
+                        status.textContent = "Displaying events received from mapped Hue devices.";
+                    }
+                } catch {
+                    if (enabled) {
+                        status.textContent = "Unable to retrieve listener events. Retrying while event display is enabled.";
+                    }
+                } finally {
+                    requestInFlight = false;
+                }
+            };
+
+            const setEnabled = value => {
+                enabled = value;
+                toggle.textContent = enabled ? "Disable event display" : "Enable event display";
+                toggle.setAttribute("aria-pressed", enabled.toString());
+                output.hidden = !enabled;
+                if (enabled) {
+                    status.textContent = "Waiting for Hue listener events.";
+                    readEvents();
+                    timer = window.setInterval(readEvents, 1000);
+                } else {
+                    window.clearInterval(timer);
+                    timer = undefined;
+                    status.textContent = "Event display is disabled.";
+                }
+            };
+
+            toggle.addEventListener("click", () => setEnabled(!enabled));
+        })();
+    </script>
+}

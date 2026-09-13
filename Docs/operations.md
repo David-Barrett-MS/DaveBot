@@ -8,14 +8,25 @@
 | Service name | `DaveBrain` |
 | Service identity | `NT SERVICE\DaveBrain` |
 | Server URL and OIDC issuer | `https://brain.daves.tips` |
-| HTTPS listener | TCP 443 on the private LAN |
+| Browser/OIDC HTTPS listener | TCP 443 on the private LAN |
+| DaveEar mTLS HTTPS listener | TCP 8443 on the private LAN |
 | TLS | Self-signed `brain.daves.tips` certificate |
 | State path | `C:\ProgramData\DaveBot` |
 | Backup-package path | `C:\ProgramData\DaveBot\backups` |
 
 No DaveBrain endpoint is intended for public internet access. Configure private
 LAN DNS so `brain.daves.tips` resolves to the server's private address. Limit
-the Windows Firewall inbound rule for TCP 443 to the relevant LAN subnets.
+the Windows Firewall inbound rules for TCP 443 and TCP 8443 to the relevant
+LAN subnets.
+
+Kestrel serves the browser administration UI, OIDC discovery, device
+authorization, and enrollment on `https://brain.daves.tips:443` without
+requesting a client certificate. DaveEar uses
+`https://brain.daves.tips:8443` for mTLS token refreshes, heartbeats, and
+command uploads. Both listeners use the same `brain.daves.tips` server TLS
+certificate. The `DaveEarMtls` endpoint must set
+`ClientCertificateMode` to `RequireCertificate`; the application rejects Ear
+requests arriving on the UI/OIDC listener.
 
 ## Service account and directories
 
@@ -52,10 +63,26 @@ otherwise persisted.
 ## Self-signed certificate
 
 Create one self-signed certificate with `brain.daves.tips` in its DNS subject
-alternative name. Install its private key in the Windows Local Machine
-Certificate Store and configure DaveBrain by certificate thumbprint. The
-certificate should be non-exportable unless an encrypted recovery process has
-been explicitly established.
+alternative name and the server's listener IP address in its IP subject
+alternative name. Install its private key in the Windows Local Machine `My`
+Certificate Store. The CrankyServer configuration selects the certificate by
+the `brain.daves.tips` subject. The certificate should be non-exportable unless
+an encrypted recovery process has been explicitly established.
+
+For the configured `192.168.0.113` listener, run
+`Install-DaveBrainHttpsCertificate.ps1` from an elevated PowerShell session on
+CrankyServer. The script reuses or creates separate non-exportable five-year
+certificates in `Cert:\LocalMachine\My` for:
+
+- the RSA 2048-bit `brain.daves.tips` server-authentication certificate;
+- the RSA 3072-bit DaveIdentity signing/encryption certificate; and
+- the RSA 3072-bit DaveBot Ear client-certificate authority.
+
+It writes the identity certificate thumbprints and Kestrel listener settings to
+`appsettings.json`, configures the same TLS certificate for the port-443 UI
+and port-8443 DaveEar listeners, and installs the TLS certificate's public
+portion in `Cert:\LocalMachine\Root` so Kestrel can validate the self-signed
+certificate with `AllowInvalid` disabled. It never exports a private key.
 
 Distribute the public certificate or self-signed trust anchor before enrolling
 clients:
@@ -104,6 +131,29 @@ normal chain validation, but is not required for this pinned pairing flow.
 
 The Hue bridge link page shows the returned Hue API error description or the
 safe TLS/network error detail.
+
+## Hue motion and switch event-stream recovery
+
+DaveBrain tracks mapped Hue switch presses plus Hue motion and ambient
+light-level sensor updates through each bridge's authenticated CLIP v2
+Server-Sent Events endpoint, `/eventstream/clip/v2`. A motion resource and its
+associated `light_level` resource are one logical `hue.motion-sensor`; a sensor
+without a light-level resource remains valid. The application key is sent only
+as the `hue-application-key` request header. The stream uses the same
+bridge-ID TLS hostname mapping and certificate pinning as all other Hue
+requests; operators must not configure a certificate-validation bypass.
+
+The service reconciles each mapped source's current state before it accepts a
+stream and after every disconnect. Reconciliation is a baseline, not a
+trigger, so service restarts, stream snapshots, reconnects, and newly mapped
+buttons or sensors cannot replay historic automation. Streams reconnect
+independently per hub with exponential delays capped at 30 seconds. The legacy
+one-second poll is not normal operation: it is enabled only after three
+consecutive stream failures, only until the next stream retry window, and is
+itself baseline-suppressed. A bridge with stream failures therefore does not
+block event ingestion from other linked hubs. Investigate sustained
+stream-fallback warnings, bridge connectivity, Hue authorization, and the
+pinned certificate; the service keeps retrying the stream automatically.
 
 ## Identity administration
 
@@ -234,8 +284,9 @@ records. Both use atomic write with `.bak` recovery. They must not contain
 plaintext passwords, raw access/refresh/device/authorization tokens, Hue
 application keys, private signing keys, or certificates.
 
-Phase 6 implements an on-disk backup package in
-`C:\ProgramData\DaveBot\backups`. Its initial contents are:
+Create an encrypted, access-controlled backup package under
+`C:\ProgramData\DaveBot\backups` while DaveBrain is stopped. Its contents
+must include:
 
 - `state.json` and `state.json.bak`;
 - `identity.json` and `identity.json.bak`;
@@ -244,21 +295,110 @@ Phase 6 implements an on-disk backup package in
 - a record of certificate thumbprint and DPAPI recovery requirements, without
   embedding private key material or protected secret plaintext.
 
-  ## Home data import and export
+### Backup and restore procedure
 
-  An authenticated `Admin` can use the **Import / export** page to download a
-  versioned JSON file containing locations and devices. The file deliberately
-  does not contain Hue application keys, protected-secret files, OAuth material,
-  or private keys.
+1. Record the running DaveBrain version, service identity, state-directory
+   path, issuer, and certificate thumbprints. Stop `DaveBrain` and confirm it
+   is stopped before copying files.
+2. Copy `state.json`, `state.json.bak`, `identity.json`, and
+   `identity.json.bak` together. Include the `secrets` directory and the
+   Data Protection `keys` directory only in an encrypted backup whose access
+   is restricted to the recovery operators.
+3. Back up the server TLS, OAuth signing, and Ear CA certificate private keys
+   only through the approved certificate recovery process. They are normally
+   non-exportable; do not weaken that setting merely to make a backup.
+4. Store a manifest with SHA-256 hashes, schema/revision values, software
+   version, issuer, service identity, and certificate thumbprints. Do not put
+   protected-secret plaintext, passwords, tokens, audio, or private keys in
+   the manifest.
+5. To restore on the same host and service identity, stop the service, retain
+   the failed directory as a rollback copy, restore the matching documents,
+   `.bak` files, DPAPI keys, and protected secrets, verify ACLs, then start
+   the service and check `/health/ready`.
 
-  Import is an ID-based merge: an imported location or device replaces the local
-  object with the same GUID, while local objects absent from the file remain.
-  The complete merged state is validated before it is saved, so imports with
-  duplicate IDs, invalid location references, duplicate names, or unsupported
-  schema versions are rejected without changing state. Hue device mappings
-  require their linked hub to already exist on the destination host.
+DPAPI material and protected Hue secrets normally cannot be moved to a
+different host or a different service identity. On such a restore, install
+approved replacement certificates and re-enroll Hue bridges and DaveEars as
+needed. Recreating the signing key invalidates prior sessions/tokens; retain
+the prior signing certificate for any planned validation overlap.
 
-  Remote copies, schedules, off-host retention, and automated backup jobs are
+## Windows Service recovery and log retention
+
+Configure the DaveBrain service to restart on its first and second failures,
+then require operator review on a third failure, for example:
+
+```text
+sc.exe failure DaveBrain reset= 86400 actions= restart/5000/restart/30000/""/0
+```
+
+Use the exact `NT SERVICE\DaveBrain` identity for recovery testing. Retain
+structured service logs for the approved operational period, archive them with
+access controls, and remove expired archives securely. Logs and automation
+audit entries contain only IDs, outcome codes, and typed statuses; they must
+never contain Hue keys, tokens, credentials, raw audio, or arbitrary bridge
+payloads.
+
+## Hue switch automation
+
+Hue CLIP v2 `button` resources are mapped as `hue.switch` devices. DaveBrain
+uses the authenticated CLIP v2 Server-Sent Events listener at
+`/eventstream/clip/v2` as the normal source of switch changes. Each mapped,
+enabled Hue hub has an independent long-lived listener using the same
+bridge-ID hostname routing and pinned-certificate validation as other Hue
+requests. At startup and after every stream reconnect, DaveBrain reconciles
+the last observed button event and deliberately suppresses it before accepting
+new events.
+
+An ended or failed stream retries with exponential delays of 1, 2, 4, 8, 16,
+then a maximum of 30 seconds. Only after three consecutive stream failures
+does DaveBrain use bounded one-second polling, and only until the next stream
+retry. The fallback also reconciles before processing changes and never runs
+while the event stream is available. This recovery rule can miss a press while
+the bridge is disconnected, but prevents a stale/replayed press from turning
+devices on after reconnection.
+
+Automation configuration is Admin-only. Actions are persisted as the sole
+allow-listed `device.setState` operation, targeting a mapped device and its
+advertised capabilities. Shell commands, scripts, URLs, and expressions are
+not configuration options. An action set contains ordered action IDs; a
+trigger contains ordered action-set IDs and optional cooldown seconds.
+Completed actions are not retried when a later action fails. The bounded
+in-memory audit shows trigger decisions and individual action outcomes.
+
+State criteria is strict JSON:
+
+```json
+{
+  "all": [
+    { "field": "event", "equals": "initial_press" },
+    { "field": "button", "equals": "1" }
+  ]
+}
+```
+
+Each `all` item has one supported `field` and scalar `equals` value. Supported
+fields are `event`, `button`, `isOn`, `brightness`, `colour.x`, and
+`colour.y`. Button events are deduplicated by mapped source and Hue event ID;
+trigger cooldown is evaluated after criteria matching. The Automation page
+previews the source, criteria fields, references, and effective targets before
+operators rely on a switch press.
+
+## Home data import and export
+
+An authenticated `Admin` can use the **Import / export** page to download a
+versioned JSON file containing locations, devices, command aliases, and
+automation actions/action sets/triggers. The file deliberately does not
+contain Hue application keys, protected-secret files, OAuth material, or
+private keys.
+
+Import is an ID-based merge: an imported location or device replaces the local
+object with the same GUID, while local objects absent from the file remain.
+The complete merged state is validated before it is saved, so imports with
+duplicate IDs, invalid location references, duplicate names, or unsupported
+schema versions are rejected without changing state. Hue device mappings
+require their linked hub to already exist on the destination host.
+
+Remote copies, schedules, off-host retention, and automated backup jobs are
 explicitly deferred. A package restores configuration and identity data on the
 same protected host/service identity. Restoring it elsewhere requires manual
 certificate installation plus Hue and protected-secret recovery/re-enrollment.
@@ -288,7 +428,10 @@ configuration, and Hue mappings have been checked after migration.
 ## Support triage
 
 1. Check `/health/live` for process status and `/health/ready` for state,
-   identity signing-key, Foundry Local, and Hue readiness.
+   identity, Foundry Local, and configured Hue-switch readiness. A
+   transcription dependency failure or unavailable configured Hue switch
+   returns HTTP 503; notify the operator with the dependency code/status, not
+   any credential or payload.
 2. Check Windows Service status and recent correlation IDs in the structured
    logs.
 3. For browser/Ear TLS failures, verify DNS resolution and installed

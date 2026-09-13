@@ -55,6 +55,59 @@ public sealed class HomeStateStoreTests : IDisposable
     }
 
     [Fact]
+    public void MotionSensorCompositeResourcesRequireAnExistingHubAndUniqueParts()
+    {
+        var hubId = Guid.NewGuid();
+        var hub = new Hub(
+            hubId,
+            "Hue",
+            "hue",
+            "https://192.168.1.20/",
+            "opaque",
+            true);
+        var sensor = new Device(
+            Guid.NewGuid(),
+            "Kitchen motion sensor",
+            "hue.motion-sensor",
+            null,
+            true,
+            hubId,
+            "motion:motion-1;lightLevel:level-1",
+            State: new DeviceState(
+                null,
+                null,
+                Attributes: new Dictionary<string, string>
+                {
+                    ["motion"] = "true",
+                    ["motionValid"] = "true",
+                    ["lightLevel"] = "5000",
+                    ["lightLevelAvailable"] = "true",
+                }));
+
+        var valid = HomeStateDocument.Empty with { Hubs = [hub], Devices = [sensor] };
+        HomeState.FromDocument(valid);
+
+        var conflictingLight = new Device(
+            Guid.NewGuid(),
+            "Conflict",
+            "hue.light",
+            null,
+            true,
+            hubId,
+            "level-1");
+        Assert.Throws<InvalidOperationException>(() =>
+            HomeState.FromDocument(valid with { Devices = [sensor, conflictingLight] }));
+        Assert.Throws<InvalidOperationException>(() =>
+            HomeState.FromDocument(valid with
+            {
+                Devices =
+                [
+                    sensor with { ExternalResourceId = "motion:motion-1;lightLevel:" },
+                ],
+            }));
+    }
+
+    [Fact]
     public async Task UpdateRejectsAliasWithoutAnExistingLocation()
     {
         var store = new HomeStateStore(

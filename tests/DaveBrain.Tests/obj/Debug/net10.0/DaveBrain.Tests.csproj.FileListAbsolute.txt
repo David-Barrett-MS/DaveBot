@@ -153,3 +153,4 @@ D:\Github Repos\David-Barrett-MS\DaveBot\tests\DaveBrain.Tests\bin\Debug\net10.0
 D:\Github Repos\David-Barrett-MS\DaveBot\tests\DaveBrain.Tests\bin\Debug\net10.0\Microsoft.EntityFrameworkCore.Relational.dll
 D:\Github Repos\David-Barrett-MS\DaveBot\tests\DaveBrain.Tests\bin\Debug\net10.0\OpenIddict.EntityFrameworkCore.dll
 D:\Github Repos\David-Barrett-MS\DaveBot\tests\DaveBrain.Tests\bin\Debug\net10.0\OpenIddict.EntityFrameworkCore.Models.dll
+D:\Github Repos\David-Barrett-MS\DaveBot\tests\DaveBrain.Tests\bin\Debug\net10.0\dotnet-tools.json

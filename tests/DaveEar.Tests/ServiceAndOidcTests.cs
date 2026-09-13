@@ -70,17 +70,36 @@ public sealed class ServiceAndOidcTests
         var request = new CertificateRequest("CN=test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
         var configuration = Configuration();
+        Uri? refreshUri = null;
         var provider = new MtlsAccessTokenProvider(
             configuration,
             new EarCredentials(key.ExportPkcs8PrivateKeyPem(), certificate.ExportCertificatePem(), "old-refresh"),
             new OidcDiscovery(configuration.Issuer, new Uri("https://brain.example.test/device"), new Uri("https://brain.example.test/token")),
-            _ => new HttpClient(new StubHandler(_ => Json("""{"access_token":"access","refresh_token":"new-refresh","expires_in":600}"""))));
+            _ => new HttpClient(new StubHandler(request =>
+            {
+                refreshUri = request.RequestUri;
+                return Json("""{"access_token":"access","refresh_token":"new-refresh","expires_in":600}""");
+            })));
         var credentials = new RecordingCredentialStore();
 
         Assert.Equal("access", await provider.GetAsync(CancellationToken.None));
         await provider.PersistRotatedCredentialsAsync(credentials, CancellationToken.None);
 
         Assert.Equal("new-refresh", credentials.Saved!.RefreshToken);
+        Assert.Equal(8443, refreshUri!.Port);
+    }
+
+    [Fact]
+    public void ConfigurationUsesSameHostDedicatedMtlsEndpoint()
+    {
+        var configuration = Configuration();
+
+        Assert.Equal("brain.example.test", configuration.EffectiveMtlsEndpoint.Host);
+        Assert.Equal(8443, configuration.EffectiveMtlsEndpoint.Port);
+        Assert.Throws<InvalidOperationException>(() => (configuration with
+        {
+            MtlsEndpoint = new Uri("https://other.example.test:8443"),
+        }).Validate());
     }
 
     [Fact]

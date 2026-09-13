@@ -16,9 +16,12 @@ public sealed record DaveEarConfiguration(
     int MaximumSegmentMilliseconds,
     int QueueCapacity,
     int MaximumSpoolBytes,
-    int MaximumSpoolAgeHours)
+    int MaximumSpoolAgeHours,
+    Uri? MtlsEndpoint = null)
 {
     public const string DefaultClientId = "DaveEar";
+
+    public Uri EffectiveMtlsEndpoint => MtlsEndpoint ?? CreateDefaultMtlsEndpoint(Issuer);
 
     public static DaveEarConfiguration Create(
         Uri issuer,
@@ -35,7 +38,18 @@ public sealed record DaveEarConfiguration(
             MaximumSegmentMilliseconds: 30_000,
             QueueCapacity: 4,
             MaximumSpoolBytes: 20 * 1024 * 1024,
-            MaximumSpoolAgeHours: 24);
+            MaximumSpoolAgeHours: 24,
+            MtlsEndpoint: CreateDefaultMtlsEndpoint(issuer));
+
+    public static Uri CreateDefaultMtlsEndpoint(Uri issuer)
+    {
+        ArgumentNullException.ThrowIfNull(issuer);
+        return new UriBuilder(issuer)
+        {
+            Port = 8443,
+            Path = "/",
+        }.Uri;
+    }
 
     public void Validate(bool requireEnrollment = true)
     {
@@ -44,8 +58,13 @@ public sealed record DaveEarConfiguration(
             throw new InvalidOperationException("DaveBrain issuer must be an absolute HTTPS URI.");
         }
 
+        var mtlsEndpoint = EffectiveMtlsEndpoint;
         if (string.IsNullOrWhiteSpace(ClientId) || string.IsNullOrWhiteSpace(Name) ||
             LocationId == Guid.Empty || (requireEnrollment && EarId == Guid.Empty) ||
+            !mtlsEndpoint.IsAbsoluteUri ||
+            !string.Equals(mtlsEndpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(mtlsEndpoint.Host, Issuer.Host, StringComparison.OrdinalIgnoreCase) ||
+            mtlsEndpoint.Port == Issuer.Port ||
             EnergyThreshold is < 1 or > 32_767 ||
             OnsetMilliseconds is < 20 or > 2_000 ||
             PreRollMilliseconds is < 0 or > 2_000 ||
