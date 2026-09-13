@@ -45,7 +45,8 @@ DaveBrain (Windows Service)
   |-- DaveIdentity: local accounts and OAuth/OIDC authority
   |-- DaveHome: commands, locations, devices, actions, triggers, Hue adapter
   |-- Foundry Local: Whisper Tiny transcription over loopback
-  `-- Philips Hue Bridge: CLIP v2 over the private LAN
+  |-- Philips Hue Bridge: CLIP v2 over the private LAN
+  `-- Philips Air+: account-authorized HTTPS/MQTT over TLS
 
 DaveEar (Windows/Linux)
   | HTTPS + OAuth mTLS certificate-bound access token
@@ -90,6 +91,30 @@ deterministic `device.setState`; it resolves a registered device provider and
 validates the target capability. The engine holds only bounded deduplication,
 cooldown, and audit history and never stores bridge credentials or payloads in
 that history.
+
+## Philips Air+ integration
+
+Philips Air+ devices are an explicit exception to DaveBot's local-first device
+topology. The supported Air+ protocol is account-authorized cloud access, not a
+LAN integration: DaveBrain calls the Philips/Versuni HTTPS device API and uses
+MQTT 3.1.1 over certificate-validated WSS for device-shadow reads and writes.
+It opens a bounded request/response MQTT connection only when an administrator
+checks devices, reads sensors, or sets a fan speed; it does not create a
+long-lived cloud listener.
+
+An administrator starts a PKCE authorization flow from the Philips Air+ page
+and supplies the returned redirect address or authorization code to complete
+the link. The authorization verifier/state is random, tied to the
+administrator, single-use, and expires after ten minutes. Access and refresh
+tokens are stored only through `ISecretStore` (Windows DPAPI by default), never
+in `state.json`, logs, or the UI. The persisted device mapping contains the
+Air+ API device ID, not the cloud MQTT thing name.
+
+Sensor attributes are populated only where the shadow reports them, including
+PM2.5, allergen/air-quality/gas indicators, temperature, humidity, filter
+status, product state/errors, and fan speed. The sole mutable Air+ operation
+is fan speed, allow-listed to levels `1` through `10`, `81` (level 11), and
+`82` (level 12). This prevents arbitrary cloud-shadow writes.
 
 ## Solution and dependency graph
 

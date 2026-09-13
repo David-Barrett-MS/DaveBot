@@ -1,7 +1,14 @@
+Add Philips Air+ support (https://github.com/bartoszj5/ha-philips-airplus)
+
+Blink support (https://developer.joinblink.com/reference/quick-start, https://developer.joinblink.com/docs/creating-an-integration)
+i- Connect account, Import devices
+- Listen for events
 Import locations from Hue (rooms and zones)
 Add scene support
 Import scenes from Hue
 Add Lyrion Music Player support
+- List players
+- List tracks/albums/artists
+- Play track on specific players (location aware)
 Add environment sensor devices (e.g. bedroom Pi)
-Add Philips Air+ support (https://github.com/bartoszj5/ha-philips-airplus)
-Blink support
+

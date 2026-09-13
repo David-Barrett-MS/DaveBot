@@ -72,6 +72,16 @@ public sealed record AutomationStateCriteria(IReadOnlyList<AutomationStateCriter
             "brightness" => criterion.Value.ValueKind == JsonValueKind.Number &&
                 criterion.Value.TryGetInt32(out var brightness) &&
                 state.Brightness == brightness,
+            "fanSpeed" => criterion.Value.ValueKind == JsonValueKind.Number &&
+                criterion.Value.TryGetInt32(out var fanSpeed) &&
+                state.Attributes is not null &&
+                state.Attributes.TryGetValue("fanSpeed", out var actualFanSpeed) &&
+                int.TryParse(
+                    actualFanSpeed,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var actualFanSpeedValue) &&
+                actualFanSpeedValue == fanSpeed,
             "colour.x" => criterion.Value.ValueKind == JsonValueKind.Number &&
                 criterion.Value.TryGetDouble(out var x) &&
                 state.Colour?.X == x,
@@ -134,6 +144,7 @@ public static class AutomationStateCriteriaParser
     {
         "isOn",
         "brightness",
+        "fanSpeed",
         "colour.x",
         "colour.y",
         "event",
@@ -214,6 +225,9 @@ public static class AutomationStateCriteriaParser
             "isOn" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
             "brightness" => value.ValueKind == JsonValueKind.Number &&
                 value.TryGetInt32(out var brightness) && brightness is >= 0 and <= 100,
+            "fanSpeed" => value.ValueKind == JsonValueKind.Number &&
+                value.TryGetInt32(out var fanSpeed) &&
+                (fanSpeed is >= 1 and <= 10 or 81 or 82),
             "colour.x" or "colour.y" => value.ValueKind == JsonValueKind.Number &&
                 value.TryGetDouble(out var coordinate) && coordinate is >= 0 and <= 1,
             "event" or "button" => value.ValueKind == JsonValueKind.String &&
@@ -774,6 +788,11 @@ public sealed class AutomationConfigurationService(IHomeStateStore homeStateStor
         if (stateChange.Brightness is { } brightness)
         {
             entries.Add($"brightness {brightness}%");
+        }
+
+        if (stateChange.FanSpeed is { } fanSpeed)
+        {
+            entries.Add($"fan speed {fanSpeed}");
         }
 
         if (stateChange.Colour is { } colour)

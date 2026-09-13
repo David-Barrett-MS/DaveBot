@@ -14,6 +14,7 @@ public enum DeviceCapabilities
     OnOff = 1,
     Brightness = 2,
     Colour = 4,
+    FanSpeed = 8,
 }
 
 public sealed record DeviceColour(double X, double Y);
@@ -280,6 +281,17 @@ public sealed class HomeState
                     "Hue devices must map uniquely to an existing hub resource.");
             }
 
+            if (device.DeviceType == "philips.airplus" &&
+                (device.HubId is not { } airPlusHubId ||
+                 !HubsByProvider(document, airPlusHubId, "philips.airplus") ||
+                 device.ExternalResourceId is not { } airPlusDeviceId ||
+                 !IsExternalResourceId(airPlusDeviceId) ||
+                 !externalResourceIds.Add((airPlusHubId, airPlusDeviceId))))
+            {
+                throw new InvalidOperationException(
+                    "Philips Air+ devices must map uniquely to a Philips Air+ hub API device ID.");
+            }
+
             if (device.State?.Brightness is < 0 or > 100)
             {
                 throw new InvalidOperationException("Device brightness must be between 0 and 100.");
@@ -292,7 +304,7 @@ public sealed class HomeState
             }
 
             if (device.State?.Attributes is { } attributes &&
-                (attributes.Count > 8 ||
+                (attributes.Count > 20 ||
                  attributes.Any(attribute =>
                      string.IsNullOrWhiteSpace(attribute.Key) ||
                      attribute.Key.Length > 50 ||
@@ -413,7 +425,7 @@ public sealed class HomeState
     private static bool IsValidStateChange(
         DeviceStateChange change,
         DeviceCapabilities capabilities) =>
-        change is not { IsOn: null, Brightness: null, Colour: null } &&
+        change is not { IsOn: null, Brightness: null, Colour: null, FanSpeed: null } &&
         (change.IsOn is null || capabilities.HasFlag(DeviceCapabilities.OnOff)) &&
         (change.Brightness is null ||
          (change.Brightness is >= 0 and <= 100 &&
@@ -421,7 +433,18 @@ public sealed class HomeState
         (change.Colour is null ||
          (change.Colour.X is >= 0 and <= 1 &&
           change.Colour.Y is >= 0 and <= 1 &&
-          capabilities.HasFlag(DeviceCapabilities.Colour)));
+          capabilities.HasFlag(DeviceCapabilities.Colour)) &&
+        (change.FanSpeed is null ||
+         (change.FanSpeed is >= 1 and <= 10 or 81 or 82) &&
+         capabilities.HasFlag(DeviceCapabilities.FanSpeed)));
+
+    private static bool HubsByProvider(HomeStateDocument document, Guid hubId, string providerType) =>
+        document.Hubs.Any(hub => hub.Id == hubId &&
+            string.Equals(hub.ProviderType, providerType, StringComparison.Ordinal));
+
+    private static bool IsExternalResourceId(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 200 &&
+        value == value.Trim();
 
     private static bool TryGetHueResourceIds(Device device, out IReadOnlyList<string> resourceIds)
     {

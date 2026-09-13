@@ -35,7 +35,8 @@ Grant this identity:
 
 - read access to the selected certificate private key;
 - modify access to `C:\ProgramData\DaveBot` and its child directories;
-- network access only where required for the Hue bridge and private LAN clients.
+- network access only where required for the Hue bridge and private LAN clients,
+  plus outbound HTTPS/WSS on TCP 443 if Philips Air+ is enabled.
 
 Do not run DaveBrain as LocalSystem, a personal administrator account, or a
 shared interactive account. Keep Foundry Local bound to loopback and grant the
@@ -131,6 +132,36 @@ normal chain validation, but is not required for this pinned pairing flow.
 
 The Hue bridge link page shows the returned Hue API error description or the
 safe TLS/network error detail.
+
+## Philips Air+ account integration
+
+Philips Air+ is a cloud integration; it is not discovered on the LAN. Enable
+it only when the DaveBrain host is permitted to make outbound certificate-
+validated HTTPS and WSS connections to Philips/Versuni on TCP 443. It needs a
+Philips Air+ OAuth client registration and an allowed redirect URI. Configure
+these values in the server's protected configuration, not source control:
+
+```json
+"PhilipsAirPlus": {
+  "ClientId": "<registered-client-id>",
+  "ClientSecret": "<registered-client-secret>",
+  "RedirectUri": "https://<registered-callback>"
+}
+```
+
+`RedirectUri` may instead be the registered `com.philips.air` custom redirect
+URI. Do not copy third-party client credentials into DaveBrain configuration;
+use credentials issued for this deployment. The app deliberately does not
+accept credentials through a browser form.
+
+After restarting DaveBrain, an Admin opens **Philips Air+**, starts the PKCE
+sign-in flow, approves access with the Air+ account, and pastes the complete
+redirect address or authorization code into the completion form. The access
+and refresh tokens are kept in the DPAPI-protected secret store. The import
+screen lists devices even when a particular device has no current shadow
+readings; import it, then use **Read sensors** after it is online. The
+application only permits fan-speed values 1-10, 81, and 82, and does not allow
+arbitrary cloud device-state writes.
 
 ## Hue motion and switch event-stream recovery
 

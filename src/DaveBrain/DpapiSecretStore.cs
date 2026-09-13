@@ -19,7 +19,7 @@ public sealed class DpapiSecretStore(
         }
 
         Directory.CreateDirectory(directory);
-        var reference = $"hue-{Guid.NewGuid():N}";
+        var reference = $"secret-{Guid.NewGuid():N}";
         var path = GetPath(reference);
         var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
@@ -71,8 +71,13 @@ public sealed class DpapiSecretStore(
 
     private string GetPath(string reference)
     {
-        if (!reference.StartsWith("hue-", StringComparison.Ordinal) ||
-            !Guid.TryParseExact(reference[4..], "N", out _))
+        var prefixLength = reference.StartsWith("secret-", StringComparison.Ordinal)
+            ? "secret-".Length
+            : reference.StartsWith("hue-", StringComparison.Ordinal)
+                ? "hue-".Length
+                : 0;
+        if (prefixLength == 0 ||
+            !Guid.TryParseExact(reference[prefixLength..], "N", out _))
         {
             throw new ArgumentException("The secret reference is invalid.", nameof(reference));
         }

@@ -23,6 +23,8 @@ var stateDirectory = builder.Configuration["DaveBot:StateDirectory"]
 var issuer = new Uri(builder.Configuration["DaveIdentity:Issuer"] ?? "https://brain.daves.tips");
 var speechOptions = SpeechTranscriptionOptions.FromConfiguration(builder.Configuration);
 speechOptions.Validate();
+var philipsAirPlusOptions = builder.Configuration.GetSection("PhilipsAirPlus")
+    .Get<PhilipsAirPlusOptions>() ?? new PhilipsAirPlusOptions();
 var earMtlsPort = builder.Configuration.GetValue<int?>("DaveBot:EarMtlsPort") ?? 8443;
 if (earMtlsPort is < 1 or > 65_535 || earMtlsPort == issuer.Port)
 {
@@ -72,8 +74,18 @@ builder.Services.AddHttpClient<IHueBridgeClient, HueBridgeClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddSingleton(philipsAirPlusOptions);
+builder.Services.AddSingleton<IPhilipsAirPlusAuthorizationStateStore,
+    InMemoryPhilipsAirPlusAuthorizationStateStore>();
+builder.Services.AddHttpClient<IPhilipsAirPlusClient, PhilipsAirPlusClient>(client =>
+{
+    client.Timeout = Timeout.InfiniteTimeSpan;
+});
 builder.Services.AddSingleton<HueHubService>();
 builder.Services.AddSingleton<IDeviceProvider>(provider => provider.GetRequiredService<HueHubService>());
+builder.Services.AddSingleton<PhilipsAirPlusHubService>();
+builder.Services.AddSingleton<IDeviceProvider>(
+    provider => provider.GetRequiredService<PhilipsAirPlusHubService>());
 builder.Services.AddSingleton<HueAutomationHealth>();
 builder.Services.AddSingleton<HueListenerDebugLog>();
 builder.Services.AddSingleton<HueSwitchStateSource>();

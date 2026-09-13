@@ -1,0 +1,206 @@
+@page
+@model DaveBrain.Pages.AirPlus.IndexModel
+@{
+    ViewData["Title"] = "Philips Air+";
+}
+
+<h1>Philips Air+</h1>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <p class="alert alert-success">@statusMessage</p>
+}
+@if (Model.Result is not null)
+{
+    <p><strong>@Model.Result.Status</strong>@(Model.Result.Detail is null ? string.Empty : $": {Model.Result.Detail}")</p>
+}
+
+@if (!Model.IsConfigured)
+{
+    <p class="alert alert-warning">
+        Philips Air+ is not configured. Set <code>PhilipsAirPlus:ClientId</code>,
+        <code>PhilipsAirPlus:ClientSecret</code>, and <code>PhilipsAirPlus:RedirectUri</code>
+        in server configuration. Credentials are never entered or stored through this page.
+    </p>
+}
+else if (Model.Hubs.Count == 0)
+{
+    <h2>Link Philips Air+ account</h2>
+    <p>Philips Air+ uses the Philips/Versuni cloud service. Start sign-in, then paste the complete redirect address or authorization code after you approve access.</p>
+    <form method="post" asp-page-handler="BeginAuthorization">
+        <div class="mb-3">
+            <label for="hub-name" class="form-label">Account name</label>
+            <input id="hub-name" name="hubName" value="Philips Air+" maxlength="200" class="form-control" required />
+        </div>
+        <button type="submit" class="btn btn-primary">Start Philips sign-in</button>
+    </form>
+}
+
+@if (Model.AuthorizationUri is not null && Model.AuthorizationState is not null)
+{
+    <section class="mt-4" aria-labelledby="complete-sign-in-heading">
+        <h2 id="complete-sign-in-heading">Complete Philips sign-in</h2>
+        <p><a href="@Model.AuthorizationUri" target="_blank" rel="noopener noreferrer">Open Philips sign-in</a>, approve access, then paste the complete redirect address or authorization code below.</p>
+        <form method="post" asp-page-handler="CompleteAuthorization">
+            <input type="hidden" name="state" value="@Model.AuthorizationState" />
+            <input type="hidden" name="hubName" value="@Model.PendingHubName" />
+            <div class="mb-3">
+                <label for="redirect-url" class="form-label">Redirect address or authorization code</label>
+                <input id="redirect-url" name="redirectUrlOrCode" class="form-control" maxlength="4096" required />
+            </div>
+            <button type="submit" class="btn btn-primary">Link account</button>
+        </form>
+    </section>
+}
+
+@if (Model.Hubs.Count > 0)
+{
+    <h2 class="mt-4">Linked account</h2>
+    <table class="table">
+        <thead><tr><th>Name</th><th>State</th><th>Devices</th><th>Account actions</th></tr></thead>
+        <tbody>
+        @foreach (var hub in Model.Hubs)
+        {
+            <tr>
+                <td>@hub.Name</td>
+                <td>@(hub.Enabled ? "Linked" : "Disabled")</td>
+                <td>
+                    @if (hub.Enabled)
+                    {
+                        <form method="post" asp-page-handler="CheckDevices">
+                            <input type="hidden" name="hubId" value="@hub.Id" />
+                            <button type="submit" class="btn btn-sm btn-secondary">Check for new devices</button>
+                        </form>
+                    }
+                </td>
+                <td>
+                    <form method="post" asp-page-handler="HubAction" class="d-inline">
+                        <input type="hidden" name="hubId" value="@hub.Id" />
+                        @if (hub.Enabled)
+                        {
+                            <button type="submit" class="btn btn-sm btn-secondary" name="action" value="disable">Disable</button>
+                        }
+                        else
+                        {
+                            <button type="submit" class="btn btn-sm btn-secondary" name="action" value="enable">Enable</button>
+                        }
+                        <button type="submit" class="btn btn-sm btn-danger" name="action" value="remove">Unlink</button>
+                    </form>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+@if (Model.CandidateHubId is not null)
+{
+    <section class="mt-4" aria-labelledby="import-devices-heading">
+        <h2 id="import-devices-heading">Import Philips Air+ devices</h2>
+        @if (Model.Candidates.Count == 0)
+        {
+            <p>No new Philips Air+ devices were found.</p>
+        }
+        else
+        {
+            <table class="table">
+                <thead><tr><th>Name</th><th>Model</th><th>Current readings</th><th>Import</th></tr></thead>
+                <tbody>
+                @foreach (var device in Model.Candidates)
+                {
+                    <tr>
+                        <td>@device.Name</td>
+                        <td>@(device.ProductType ?? "Unknown")</td>
+                        <td>@Model.FormatState(device.State)</td>
+                        <td>
+                            <form method="post" asp-page-handler="Import">
+                                <input type="hidden" name="hubId" value="@Model.CandidateHubId" />
+                                <input type="hidden" name="deviceId" value="@device.DeviceId" />
+                                <input type="text" name="displayName" value="@device.Name" maxlength="200" aria-label="Display name for @device.Name" required />
+                                <select name="locationId" aria-label="Location for @device.Name">
+                                    <option value="">No location</option>
+                                    @foreach (var location in Model.Locations)
+                                    {
+                                        <option value="@location.Id">@location.Name</option>
+                                    }
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-primary">Import</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+<section class="mt-4" aria-labelledby="airplus-devices-heading">
+    <h2 id="airplus-devices-heading">Imported Philips Air+ devices</h2>
+    @if (Model.Devices.Count == 0)
+    {
+        <p>No Philips Air+ devices are imported.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead><tr><th>Name</th><th>Location</th><th>Sensor readings</th><th>Actions</th></tr></thead>
+            <tbody>
+            @foreach (var device in Model.Devices)
+            {
+                <tr>
+                    <td>@device.Name (@(device.Enabled ? "Enabled" : "Disabled"))</td>
+                    <td>
+                        <form method="post" asp-page-handler="UpdateLocation">
+                            <input type="hidden" name="deviceId" value="@device.Id" />
+                            <select name="locationId" aria-label="Location for @device.Name" onchange="this.form.requestSubmit()">
+                                @if (device.LocationId is null)
+                                {
+                                    <option value="" selected>No location</option>
+                                }
+                                else
+                                {
+                                    <option value="">No location</option>
+                                }
+                                @foreach (var location in Model.Locations)
+                                {
+                                    @if (device.LocationId == location.Id)
+                                    {
+                                        <option value="@location.Id" selected>@location.Name</option>
+                                    }
+                                    else
+                                    {
+                                        <option value="@location.Id">@location.Name</option>
+                                    }
+                                }
+                            </select>
+                        </form>
+                    </td>
+                    <td>@Model.FormatState(device.State)</td>
+                    <td>
+                        <form method="post" asp-page-handler="DeviceAction">
+                            <input type="hidden" name="deviceId" value="@device.Id" />
+                            <select name="action" aria-label="Action for @device.Name">
+                                <option value="read">Read sensors</option>
+                                <option value="set-fan-speed">Set fan speed</option>
+                                <option value="disable">Disable mapping</option>
+                                <option value="enable">Enable mapping</option>
+                                <option value="remove">Remove mapping</option>
+                            </select>
+                            <select name="fanSpeed" aria-label="Fan speed for @device.Name">
+                                @for (var speed = 1; speed <= 10; speed++)
+                                {
+                                    <option value="@speed">@speed</option>
+                                }
+                                <option value="81">11</option>
+                                <option value="82">12</option>
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-primary">Run</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</section>

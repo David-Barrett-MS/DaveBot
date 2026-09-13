@@ -21,7 +21,8 @@ public sealed record DeviceOperationResult(
 public sealed record DeviceStateChange(
     bool? IsOn = null,
     int? Brightness = null,
-    DeviceColour? Colour = null);
+    DeviceColour? Colour = null,
+    int? FanSpeed = null);
 
 public interface ISecretStore
 {
