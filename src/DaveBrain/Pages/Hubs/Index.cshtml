@@ -1,0 +1,76 @@
+@page
+@model DaveBrain.Pages.Hubs.IndexModel
+@{
+    ViewData["Title"] = "Hue bridges";
+}
+
+<h1>Hue bridges</h1>
+<p>Press the physical link button on the bridge immediately before linking it.</p>
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <p class="alert alert-success">@statusMessage</p>
+}
+
+<form method="post" asp-page-handler="Discover" class="mb-4">
+    <button type="submit" class="btn btn-secondary">Discover local bridges</button>
+</form>
+
+@if (Model.Discovered.Count > 0)
+{
+    <h2>Discovered bridges</h2>
+    <ul>
+    @foreach (var bridge in Model.Discovered)
+    {
+        <li>
+            @bridge.BridgeId - @bridge.Address
+            <form method="post" asp-page-handler="Link" class="d-inline">
+                <input type="hidden" name="BridgeName" value="Hue bridge @bridge.BridgeId" />
+                <input type="hidden" name="BridgeAddress" value="@bridge.Address" />
+                <input type="hidden" name="BridgeId" value="@bridge.BridgeId" />
+                <button type="submit" class="btn btn-sm btn-primary">Link</button>
+            </form>
+        </li>
+    }
+    </ul>
+}
+
+<h2>Link bridge</h2>
+<form method="post" asp-page-handler="Link" class="mb-4">
+    <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+    <div class="mb-3">
+        <label asp-for="BridgeName" class="form-label"></label>
+        <input asp-for="BridgeName" class="form-control" />
+    </div>
+    <div class="mb-3">
+        <label asp-for="BridgeAddress" class="form-label"></label>
+        <input asp-for="BridgeAddress" class="form-control" placeholder="https://192.168.1.20/" />
+    </div>
+    <button type="submit" class="btn btn-primary">Link bridge</button>
+</form>
+
+@if (Model.Hubs.Count == 0)
+{
+    <p>No Hue bridges are linked.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Name</th><th>Address</th><th>State</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var hub in Model.Hubs)
+        {
+            <tr>
+                <td>@hub.Name</td>
+                <td>@hub.Address</td>
+                <td>@(hub.Enabled ? "Linked" : "Disabled")</td>
+                <td>
+                    <form method="get" asp-page="/Hubs/Import" class="d-inline">
+                        <input type="hidden" name="hubId" value="@hub.Id" />
+                        <button type="submit" class="btn btn-sm btn-secondary">Check for new devices</button>
+                    </form>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

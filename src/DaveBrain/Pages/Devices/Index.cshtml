@@ -1,0 +1,74 @@
+@page
+@model DaveBrain.Pages.Devices.IndexModel
+@{
+    ViewData["Title"] = "Devices";
+}
+
+<h1>Hue lights</h1>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
+@if (Model.Result is not null)
+{
+    <p><strong>@Model.Result.Status</strong>@(Model.Result.Detail is null ? string.Empty : $": {Model.Result.Detail}")</p>
+}
+
+@if (Model.Devices.Count == 0)
+{
+    <p>No Hue lights are mapped.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Name</th><th>Location</th><th>Cached state</th><th>Diagnostic action</th></tr></thead>
+        <tbody>
+        @foreach (var device in Model.Devices)
+        {
+            <tr>
+                <td>@device.Name (@(device.Enabled ? "Enabled" : "Disabled"))</td>
+                <td>
+                    <form method="post" asp-page-handler="UpdateLocation">
+                        <input type="hidden" name="deviceId" value="@device.Id" />
+                        <select name="locationId" aria-label="Location for @device.Name" onchange="this.form.requestSubmit()">
+                            @if (device.LocationId is null)
+                            {
+                                <option value="" selected>No location</option>
+                            }
+                            else
+                            {
+                                <option value="">No location</option>
+                            }
+                            @foreach (var location in Model.Locations)
+                            {
+                                @if (device.LocationId == location.Id)
+                                {
+                                    <option value="@location.Id" selected>@location.Name</option>
+                                }
+                                else
+                                {
+                                    <option value="@location.Id">@location.Name</option>
+                                }
+                            }
+                        </select>
+                    </form>
+                </td>
+                <td>@Model.FormatState(device.State)</td>
+                <td>
+                    <form method="post">
+                        <input type="hidden" name="deviceId" value="@device.Id" />
+                        <select name="action" aria-label="Action">
+                            <option value="read">Read</option>
+                            <option value="on">Turn on</option>
+                            <option value="off">Turn off</option>
+                            <option value="brightness">Set brightness</option>
+                            <option value="disable">Disable mapping</option>
+                            <option value="enable">Enable mapping</option>
+                            <option value="remove">Remove mapping</option>
+                        </select>
+                        <input type="number" name="brightness" min="0" max="100" aria-label="Brightness" />
+                        <button type="submit" class="btn btn-sm btn-primary">Run</button>
+                    </form>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

@@ -1,0 +1,14 @@
+@page "/connect/verify"
+@model DaveBrain.Pages.Connect.VerifyModel
+@{
+    ViewData["Title"] = "Approve DaveEar";
+}
+
+<h1>Approve DaveEar enrollment</h1>
+<p>Approve the displayed code only when it matches the code shown by the DaveEar you are registering.</p>
+<form method="post">
+    <input type="hidden" asp-for="UserCode" />
+    <p><strong>@Model.UserCode</strong></p>
+    <button type="submit" name="approved" value="true" class="btn btn-primary">Approve</button>
+    <button type="submit" name="approved" value="false" class="btn btn-secondary">Deny</button>
+</form>

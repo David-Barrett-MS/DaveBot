@@ -1,0 +1,26 @@
+@page
+@model DaveBrain.Pages.Data.TransferModel
+@{
+    ViewData["Title"] = "Import and export";
+}
+
+<h1>Home data import and export</h1>
+<p>Exports locations and device mappings only. Hue application keys and other protected secrets are never included.</p>
+
+<h2>Export</h2>
+<p><a asp-page-handler="Export" class="btn btn-primary">Download home data</a></p>
+
+<h2>Import</h2>
+<p>Importing replaces locations and devices with matching IDs. Objects not present in the file are retained.</p>
+<form method="post" enctype="multipart/form-data">
+    <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+    @if (TempData["StatusMessage"] is string statusMessage)
+    {
+        <p class="alert alert-success">@statusMessage</p>
+    }
+    <div class="mb-3">
+        <label asp-for="ImportFile" class="form-label"></label>
+        <input asp-for="ImportFile" class="form-control" accept=".json,application/json" />
+    </div>
+    <button type="submit" class="btn btn-danger">Import home data</button>
+</form>

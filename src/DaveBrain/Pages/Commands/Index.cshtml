@@ -1,0 +1,116 @@
+@page
+@model DaveBrain.Pages.Commands.IndexModel
+@{
+    ViewData["Title"] = "Text commands";
+}
+
+<h1>Text commands</h1>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
+
+<section class="mb-4">
+    <h2>Diagnostic command</h2>
+    <p>Examples: <code>lights on</code>, <code>turn kitchen lights off</code>, <code>set kitchen lights to 50%</code>, <code>set kitchen lights to blue</code>, and <code>are kitchen lights on</code>.</p>
+    <form method="post" asp-page-handler="Run">
+        <label asp-for="Transcript" class="form-label">Command</label>
+        <input asp-for="Transcript" class="form-control" maxlength="500" />
+        <label asp-for="SourceLocationId" class="form-label mt-2">Default location</label>
+        <select asp-for="SourceLocationId" class="form-select">
+            <option value="">Choose a location for commands without one</option>
+            @foreach (var location in Model.Locations)
+            {
+                <option value="@location.Id">@location.Name</option>
+            }
+        </select>
+        <button type="submit" class="btn btn-primary mt-2">Run command</button>
+    </form>
+    @if (Model.Result is not null)
+    {
+        <p class="mt-2"><strong>@Model.Result.Outcome:</strong> @Model.Result.Message.Text <span class="text-muted">(@Model.Result.TargetSummary; @Model.Result.CorrelationId)</span></p>
+    }
+</section>
+
+<section class="mb-4">
+    <h2>Location aliases</h2>
+    <form method="post" asp-page-handler="AddAlias" class="row g-2 mb-3">
+        <div class="col-sm-5"><input asp-for="NewAlias" class="form-control" placeholder="Alias" /></div>
+        <div class="col-sm-5">
+            <select asp-for="NewAliasLocationId" class="form-select">
+                <option value="">Choose location</option>
+                @foreach (var location in Model.Locations)
+                {
+                    <option value="@location.Id">@location.Name</option>
+                }
+            </select>
+        </div>
+        <div class="col-sm-2"><button type="submit" class="btn btn-secondary">Add alias</button></div>
+    </form>
+    @if (Model.Aliases.Count == 0)
+    {
+        <p>No aliases are configured.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead><tr><th>Alias</th><th>Location</th><th>Actions</th></tr></thead>
+            <tbody>
+            @foreach (var alias in Model.Aliases)
+            {
+                <tr>
+                    <td>
+                        <form method="post" asp-page-handler="UpdateAlias" class="d-flex gap-2">
+                            <input type="hidden" name="id" value="@alias.Id" />
+                            <input name="alias" value="@alias.Alias" class="form-control" aria-label="Alias" />
+                            <select name="locationId" class="form-select" aria-label="Alias location">
+                                @foreach (var location in Model.Locations)
+                                {
+                                    if (location.Id == alias.LocationId)
+                                    {
+                                        <option value="@location.Id" selected>@location.Name</option>
+                                    }
+                                    else
+                                    {
+                                        <option value="@location.Id">@location.Name</option>
+                                    }
+                                }
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-secondary">Save</button>
+                        </form>
+                    </td>
+                    <td>@Model.Locations.SingleOrDefault(location => location.Id == alias.LocationId)?.Name</td>
+                    <td>
+                        <form method="post" asp-page-handler="DeleteAlias">
+                            <input type="hidden" name="id" value="@alias.Id" />
+                            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</section>
+
+<section>
+    <h2>Recent command history</h2>
+    @if (Model.RecentCommands.Count == 0)
+    {
+        <p>No commands have been processed.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead><tr><th>When</th><th>Source</th><th>Transcript</th><th>Summary</th></tr></thead>
+            <tbody>
+            @foreach (var entry in Model.RecentCommands)
+            {
+                <tr>
+                    <td>@entry.OccurredUtc.LocalDateTime</td>
+                    <td>@entry.Source</td>
+                    <td>@entry.Transcript</td>
+                    <td>@entry.Summary</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</section>

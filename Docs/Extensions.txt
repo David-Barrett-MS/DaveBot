@@ -1,0 +1,4 @@
+Blink support
+Import locations from Hue (rooms and zones)
+Add scene support
+Import scenes from Hue

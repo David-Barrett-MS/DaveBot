@@ -1,0 +1,48 @@
+@page
+@model DaveBrain.Pages.Locations.IndexModel
+@{
+    ViewData["Title"] = "Locations";
+}
+
+<h1>Locations</h1>
+
+@if (User.IsInRole("Admin"))
+{
+    <form method="post" class="mb-4">
+        <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+        <label asp-for="NewLocationName" class="form-label"></label>
+        <input asp-for="NewLocationName" class="form-control" />
+        <button type="submit" class="btn btn-primary mt-2">Add location</button>
+    </form>
+}
+
+@if (Model.Locations.Count == 0)
+{
+    <p>No locations are configured.</p>
+}
+else
+{
+    <ul>
+    @foreach (var location in Model.Locations)
+    {
+        <li class="mb-2">
+            @if (User.IsInRole("Admin"))
+            {
+                <form method="post" asp-page-handler="Rename" class="d-inline">
+                    <input type="hidden" name="id" value="@location.Id" />
+                    <input name="name" value="@location.Name" aria-label="Location name" />
+                    <button type="submit" class="btn btn-sm btn-secondary">Rename</button>
+                </form>
+                <form method="post" asp-page-handler="Delete" class="d-inline">
+                    <input type="hidden" name="id" value="@location.Id" />
+                    <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                </form>
+            }
+            else
+            {
+                @location.Name
+            }
+        </li>
+    }
+    </ul>
+}

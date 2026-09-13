@@ -1,3 +1,14 @@
 <Solution>
-  <Project Path="DaveBot.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/DaveBrain/DaveBrain.csproj" />
+    <Project Path="src/DaveEar/DaveEar.csproj" />
+    <Project Path="src/DaveHome/DaveHome.csproj" />
+    <Project Path="src/DaveIdentity/DaveIdentity.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DaveBrain.Tests/DaveBrain.Tests.csproj" />
+    <Project Path="tests/DaveEar.Tests/DaveEar.Tests.csproj" />
+    <Project Path="tests/DaveHome.Tests/DaveHome.Tests.csproj" />
+    <Project Path="tests/DaveIdentity.Tests/DaveIdentity.Tests.csproj" />
+  </Folder>
 </Solution>

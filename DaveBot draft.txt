@@ -1,0 +1,67 @@
+DaveBot overview
+- Runs on Pentium J4205 with 8Gb RAM, so must be as lightweight as possible.
+- Speech to text using Foundry local, Whisper Tiny
+- Exposes web API to receive speech commands from registered clients
+- Location of client used in context of command to take action (e.g. lights on will turn on lights in same location)
+- Implements home automation
+- Visual Studio, C#, .Net
+- DaveBot solution will consist of projects: DaveBrain (WebAPI project), DaveHome (library used by DaveBrain), DaveEar (cross-platform client that runs as service or similar and listens for sound).
+- Philips Hue docs are in Docs/Philips Hue folder
+
+DaveBrain (DaveBot)
+- WebAPI exposing:
+SpeechCommand: receives potential voice recording to translate to text, which is then passed to TextCommand (with source location).
+TextCommand: receives text command (including source location), processes content and triggers actions. e.g. "lights on" would turn the lights on that are registered in the location the command was received from. "turn lounge lights on" would turn the lights on in location named lounge.
+
+DaveHome (DaveBot)
+- Each device type has corresponding class to handle control/status
+HueHub - properties of the Hub and API implementation (registration, subscribe to events)
+HueDevice - base class 
+HueLight::HueDevice - implements specific features of the light.
+HueSwitch::HueDevice - implements Hue switch
+DaveEar - implements DaveEar
+device:
+{
+  "id": "deviceid",
+  "name": "device name",
+  "type": "huelight",
+  "location": "locationid"
+  "config": { device config, dynamic as data depends on device }
+}
+location:
+{
+  "id": guid,
+  "name": "location name",
+  "includeslocations": [location.id, location.id]
+}
+DaveEar:
+{
+  "id": guid,
+  "name": "Ear name",
+  "location": "locationid",
+  "clientkey": "accesskey"
+}
+trigger:
+{
+  "id": guid,
+  "triggerdeviceids": [device.id],
+  "triggerstate": { criteria to match trigger from device(s) state },
+  "action": [ action.id, action.id ]
+}
+action:
+{
+  "id": guid,
+  "action"
+actions:
+{
+  "id": guid,
+  "name": "Collective name of actions",
+  "actions": [action.id, action.id]
+}
+
+DaveEar
+- Client for both Windows and Linux
+- Registers with DaveBot
+- Hooks into microphone to constantly listen
+- If it detects voice/sound, sends to DaveBot when gap detected (1s)
+- Has location, name, and Id (Guid).

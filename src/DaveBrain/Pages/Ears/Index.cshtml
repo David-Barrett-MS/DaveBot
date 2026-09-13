@@ -1,0 +1,36 @@
+@page
+@model DaveBrain.Pages.Ears.IndexModel
+@{
+    ViewData["Title"] = "Ears";
+}
+
+<h1>DaveEars</h1>
+@if (Model.Ears.Count == 0)
+{
+    <p>No DaveEars are enrolled.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Name</th><th>Last seen</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var ear in Model.Ears)
+        {
+            <tr>
+                <td>@ear.Name</td>
+                <td>@ear.LastSeenUtc?.ToString("u")</td>
+                <td>@(ear.Enabled ? "Active" : "Revoked")</td>
+                <td>
+                    @if (ear.Enabled)
+                    {
+                        <form method="post">
+                            <input type="hidden" name="id" value="@ear.Id" />
+                            <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
+                        </form>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

@@ -1,0 +1,24 @@
+@page
+@model DaveBrain.Pages.IndexModel
+@{
+    ViewData["Title"] = "Dashboard";
+}
+
+<h1>DaveBrain dashboard</h1>
+<p>Signed in as <strong>@User.Identity?.Name</strong>.</p>
+<dl>
+    <dt>Locations</dt>
+    <dd>@Model.LocationCount</dd>
+    <dt>Devices</dt>
+    <dd>@Model.DeviceCount</dd>
+</dl>
+
+@if (User.IsInRole("Admin"))
+{
+    <p>
+        <a asp-page="/Locations/Index">Manage locations</a> |
+        <a asp-page="/Hubs/Index">Connect Hue bridge</a> |
+        <a asp-page="/Devices/Index">View devices</a> |
+        <a asp-page="/Data/Transfer">Import / export home data</a>
+    </p>
+}

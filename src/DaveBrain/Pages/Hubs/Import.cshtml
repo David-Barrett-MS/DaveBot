@@ -1,0 +1,47 @@
+@page
+@model DaveBrain.Pages.Hubs.ImportModel
+@{
+    ViewData["Title"] = "Import Hue lights";
+}
+
+<h1>Import Hue lights</h1>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
+
+@if (!Model.RetrievedCandidates)
+{
+    <p>Unable to check for new lights.</p>
+}
+else if (Model.Candidates.Count == 0)
+{
+    <p>No new lights.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Bridge name</th><th>Capabilities</th><th>Import</th></tr></thead>
+        <tbody>
+        @foreach (var light in Model.Candidates)
+        {
+            <tr>
+                <td>@light.Name</td>
+                <td>@light.Capabilities</td>
+                <td>
+                    <form method="post">
+                        <input type="hidden" name="hubId" value="@Model.HubId" />
+                        <input type="hidden" name="resourceId" value="@light.ResourceId" />
+                        <input type="text" name="displayName" value="@light.Name" aria-label="Display name" />
+                        <select name="locationId" aria-label="Location">
+                            <option value="">No location</option>
+                        @foreach (var location in Model.Locations)
+                        {
+                            <option value="@location.Id">@location.Name</option>
+                        }
+                        </select>
+                        <button type="submit" class="btn btn-sm btn-primary">Import</button>
+                    </form>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
