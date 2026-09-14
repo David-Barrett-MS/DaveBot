@@ -21,11 +21,7 @@ else
     var selectionIndex = 0;
     <form method="post" asp-page-handler="ImportSelected">
         <input type="hidden" name="hubId" value="@Model.HubId" />
-        <div class="d-flex gap-2 mb-3">
-            <button type="button" class="btn btn-outline-secondary" id="select-all-devices">Select all</button>
-            <button type="button" class="btn btn-outline-secondary" id="deselect-all-devices">Deselect all</button>
-            <button type="submit" class="btn btn-primary">Import selected</button>
-        </div>
+        <partial name="_BulkImportToolbar" model='new BulkImportToolbarModel("device-selection")' />
     @if (Model.Candidates.Count > 0)
     {
     <h2>Lights</h2>
@@ -127,16 +123,4 @@ else
     </table>
     }
     </form>
-}
-
-@section Scripts {
-    <script>
-        const selections = document.querySelectorAll(".device-selection");
-        document.getElementById("select-all-devices")?.addEventListener("click", () => {
-            selections.forEach(selection => selection.checked = true);
-        });
-        document.getElementById("deselect-all-devices")?.addEventListener("click", () => {
-            selections.forEach(selection => selection.checked = false);
-        });
-    </script>
 }

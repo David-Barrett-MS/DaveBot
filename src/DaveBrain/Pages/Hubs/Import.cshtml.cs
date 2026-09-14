@@ -157,12 +157,19 @@ public sealed class ImportModel(
 
     private async Task LoadAsync(CancellationToken cancellationToken)
     {
-        var lights = await hueHubs.GetUnmappedLightImportCandidatesAsync(HubId, cancellationToken);
+        var lights = await hueHubs.RefreshMappedLightsAsync(HubId, cancellationToken);
         var switches = await hueHubs.GetUnmappedSwitchImportCandidatesAsync(HubId, cancellationToken);
         var motionSensors = await hueHubs.GetUnmappedMotionSensorImportCandidatesAsync(
             HubId,
             cancellationToken);
-        Candidates = lights.Lights;
+        var mappedLightResourceIds = homeStateStore.Current.Document.Devices
+            .Where(device => device.HubId == HubId && device.DeviceType == "hue.light")
+            .Select(device => device.ExternalResourceId)
+            .Where(resourceId => !string.IsNullOrWhiteSpace(resourceId))
+            .ToHashSet(StringComparer.Ordinal);
+        Candidates = lights.Lights
+            .Where(light => !mappedLightResourceIds.Contains(light.ResourceId))
+            .ToArray();
         SwitchCandidates = switches.Switches;
         MotionSensorCandidates = motionSensors.MotionSensors;
         RetrievedCandidates = lights.Succeeded && switches.Succeeded && motionSensors.Succeeded;

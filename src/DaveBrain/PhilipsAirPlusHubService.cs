@@ -6,10 +6,9 @@ using DaveHome;
 
 namespace DaveBrain;
 
-public sealed record PhilipsAirPlusAuthorizationResult(
+public sealed record PhilipsAirPlusEmailVerificationResult(
     DeviceOperationStatus Status,
-    Uri? AuthorizationUri = null,
-    string? State = null,
+    string? VerificationId = null,
     string? Detail = null);
 
 public sealed record PhilipsAirPlusHubOperationResult(
@@ -31,69 +30,99 @@ public sealed record PhilipsAirPlusDeviceQueryResult(
     public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
 }
 
-public interface IPhilipsAirPlusAuthorizationStateStore
+public interface IPhilipsAirPlusEmailVerificationStore
 {
-    PhilipsAirPlusAuthorizationState Create(string authenticatedUserId);
-
-    bool TryConsume(
+    string Create(
         string authenticatedUserId,
-        string state,
-        out PhilipsAirPlusAuthorizationState authorizationState);
+        PhilipsAirPlusEmailVerificationTicket verificationTicket);
+
+    bool TryGet(
+        string authenticatedUserId,
+        string verificationId,
+        out PhilipsAirPlusEmailVerificationTicket verificationTicket);
+
+    bool TryConsume(string authenticatedUserId, string verificationId);
 }
 
-public sealed record PhilipsAirPlusAuthorizationState(
-    string State,
-    string CodeVerifier,
-    DateTimeOffset ExpiresAtUtc);
-
-public sealed class InMemoryPhilipsAirPlusAuthorizationStateStore :
-    IPhilipsAirPlusAuthorizationStateStore
+public sealed class InMemoryPhilipsAirPlusEmailVerificationStore :
+    IPhilipsAirPlusEmailVerificationStore
 {
     private static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
-    public PhilipsAirPlusAuthorizationState Create(string authenticatedUserId)
+    public string Create(
+        string authenticatedUserId,
+        PhilipsAirPlusEmailVerificationTicket verificationTicket)
     {
-        if (string.IsNullOrWhiteSpace(authenticatedUserId))
+        if (string.IsNullOrWhiteSpace(authenticatedUserId) ||
+            verificationTicket is null)
         {
-            throw new ArgumentException("An authenticated user identifier is required.", nameof(authenticatedUserId));
+            throw new ArgumentException("A valid email verification request is required.");
         }
 
         RemoveExpired();
-        var state = Base64Url(RandomNumberGenerator.GetBytes(32));
-        var verifier = Base64Url(RandomNumberGenerator.GetBytes(64));
-        var created = new PhilipsAirPlusAuthorizationState(
-            state, verifier, DateTimeOffset.UtcNow.Add(Lifetime));
-        if (!_entries.TryAdd(state, new Entry(authenticatedUserId, created)))
+        var verificationId = Base64Url(RandomNumberGenerator.GetBytes(32));
+        if (!_entries.TryAdd(verificationId, new Entry(
+                authenticatedUserId, verificationTicket, DateTimeOffset.UtcNow.Add(Lifetime))))
         {
-            throw new InvalidOperationException("Could not create a unique Philips Air+ authorization state.");
+            throw new InvalidOperationException("Could not create a unique Philips Air+ email verification request.");
         }
 
-        return created;
+        return verificationId;
     }
 
-    public bool TryConsume(
+    public bool TryGet(
         string authenticatedUserId,
-        string state,
-        out PhilipsAirPlusAuthorizationState authorizationState)
+        string verificationId,
+        out PhilipsAirPlusEmailVerificationTicket verificationTicket)
     {
-        authorizationState = null!;
-        if (string.IsNullOrWhiteSpace(authenticatedUserId) || string.IsNullOrWhiteSpace(state) ||
-            !_entries.TryGetValue(state, out var entry) ||
-            entry.Authorization.ExpiresAtUtc < DateTimeOffset.UtcNow ||
-            !CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(entry.UserId),
+        verificationTicket = null!;
+        if (!TryGetEntry(authenticatedUserId, verificationId, out var entry))
+        {
+            return false;
+        }
+
+        verificationTicket = entry.VerificationTicket;
+        return true;
+    }
+
+    public bool TryConsume(string authenticatedUserId, string verificationId)
+    {
+        if (!TryGetEntry(authenticatedUserId, verificationId, out _))
+        {
+            return false;
+        }
+
+        return _entries.TryRemove(verificationId, out _);
+    }
+
+    private bool TryGetEntry(
+        string authenticatedUserId,
+        string verificationId,
+        out Entry entry)
+    {
+        entry = null!;
+        if (string.IsNullOrWhiteSpace(authenticatedUserId) ||
+            string.IsNullOrWhiteSpace(verificationId) ||
+            !_entries.TryGetValue(verificationId, out var stored))
+        {
+            return false;
+        }
+
+        if (stored.ExpiresAtUtc < DateTimeOffset.UtcNow)
+        {
+            _entries.TryRemove(verificationId, out _);
+            return false;
+        }
+
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(stored.UserId),
                 Encoding.UTF8.GetBytes(authenticatedUserId)))
         {
             return false;
         }
 
-        if (!_entries.TryRemove(state, out _))
-        {
-            return false;
-        }
-
-        authorizationState = entry.Authorization;
+        entry = stored;
         return true;
     }
 
@@ -102,7 +131,7 @@ public sealed class InMemoryPhilipsAirPlusAuthorizationStateStore :
         var now = DateTimeOffset.UtcNow;
         foreach (var (key, entry) in _entries)
         {
-            if (entry.Authorization.ExpiresAtUtc < now)
+            if (entry.ExpiresAtUtc < now)
             {
                 _entries.TryRemove(key, out _);
             }
@@ -112,14 +141,17 @@ public sealed class InMemoryPhilipsAirPlusAuthorizationStateStore :
     private static string Base64Url(byte[] data) =>
         Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private sealed record Entry(string UserId, PhilipsAirPlusAuthorizationState Authorization);
+    private sealed record Entry(
+        string UserId,
+        PhilipsAirPlusEmailVerificationTicket VerificationTicket,
+        DateTimeOffset ExpiresAtUtc);
 }
 
 public sealed class PhilipsAirPlusHubService(
     IHomeStateStore homeStateStore,
     ISecretStore secretStore,
     IPhilipsAirPlusClient airPlusClient,
-    IPhilipsAirPlusAuthorizationStateStore authorizationStates,
+    IPhilipsAirPlusEmailVerificationStore emailVerifications,
     PhilipsAirPlusOptions options) : IDeviceProvider
 {
     private const string ProviderType = "philips.airplus";
@@ -138,63 +170,61 @@ public sealed class PhilipsAirPlusHubService(
         .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
-    public Task<PhilipsAirPlusAuthorizationResult> BeginAuthorizationAsync(
+    public async Task<PhilipsAirPlusEmailVerificationResult> RequestEmailVerificationAsync(
         string authenticatedUserId,
+        string email,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         options.Validate();
-        var authorization = authorizationStates.Create(authenticatedUserId);
-        var challenge = Convert.ToBase64String(
-                SHA256.HashData(Encoding.ASCII.GetBytes(authorization.CodeVerifier)))
-            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        var query = new Dictionary<string, string>
+        if (string.IsNullOrWhiteSpace(authenticatedUserId) || !IsValidEmail(email))
         {
-            ["client_id"] = options.ClientId,
-            ["response_type"] = "code",
-            ["redirect_uri"] = options.RedirectUri,
-            ["scope"] = options.Scope,
-            ["state"] = authorization.State,
-            ["code_challenge"] = challenge,
-            ["code_challenge_method"] = "S256",
-        };
-        var builder = new UriBuilder(options.AuthorizationEndpoint)
+            return new PhilipsAirPlusEmailVerificationResult(DeviceOperationStatus.InvalidState);
+        }
+
+        var requested = await airPlusClient.RequestEmailVerificationAsync(
+            email.Trim(), cancellationToken);
+        if (!requested.Succeeded || requested.Value is null)
         {
-            Query = string.Join("&", query.Select(pair =>
-                $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")),
-        };
-        return Task.FromResult(new PhilipsAirPlusAuthorizationResult(
-            DeviceOperationStatus.Succeeded, builder.Uri, authorization.State));
+            return new PhilipsAirPlusEmailVerificationResult(
+                requested.Status, Detail: requested.Detail);
+        }
+
+        var verificationId = emailVerifications.Create(
+            authenticatedUserId, requested.Value);
+        return new PhilipsAirPlusEmailVerificationResult(
+            DeviceOperationStatus.Succeeded, verificationId);
     }
 
-    public async Task<PhilipsAirPlusHubOperationResult> CompleteAuthorizationAsync(
+    public async Task<PhilipsAirPlusHubOperationResult> CompleteEmailVerificationAsync(
         string authenticatedUserId,
-        string redirectUrlOrCode,
-        string state,
+        string verificationId,
+        string code,
         string hubName,
         CancellationToken cancellationToken = default)
     {
         options.Validate();
-        if (string.IsNullOrWhiteSpace(hubName) || hubName.Trim().Length > 200 ||
-            !TryExtractAuthorizationCode(redirectUrlOrCode, out var code, out var callbackState) ||
-            !string.IsNullOrWhiteSpace(callbackState) &&
-            !FixedTimeEquals(callbackState, state) ||
-            !authorizationStates.TryConsume(authenticatedUserId, state, out var authorization))
+        if (string.IsNullOrWhiteSpace(authenticatedUserId) ||
+            !IsValidVerificationId(verificationId) ||
+            !IsValidVerificationCode(code) ||
+            string.IsNullOrWhiteSpace(hubName) || hubName.Trim().Length > 200 ||
+            !emailVerifications.TryGet(
+                authenticatedUserId, verificationId,
+                out var verificationTicket))
         {
             return new PhilipsAirPlusHubOperationResult(DeviceOperationStatus.InvalidState);
         }
 
-        var token = await airPlusClient.ExchangeAuthorizationCodeAsync(
-            code, authorization.CodeVerifier, cancellationToken);
+        var token = await airPlusClient.CompleteEmailVerificationAsync(
+            code.Trim(), verificationTicket, cancellationToken);
         if (!token.Succeeded || token.Value is null)
         {
             return new PhilipsAirPlusHubOperationResult(token.Status, Detail: token.Detail);
         }
 
-        var account = await airPlusClient.GetAccountIdAsync(token.Value.AccessToken, cancellationToken);
-        if (!account.Succeeded || string.IsNullOrWhiteSpace(account.Value))
+        if (!emailVerifications.TryConsume(authenticatedUserId, verificationId))
         {
-            return new PhilipsAirPlusHubOperationResult(account.Status, Detail: account.Detail);
+            return new PhilipsAirPlusHubOperationResult(DeviceOperationStatus.InvalidState);
         }
 
         var secretReference = await secretStore.StoreAsync(
@@ -258,7 +288,10 @@ public sealed class PhilipsAirPlusHubService(
         var candidates = new List<PhilipsAirPlusDeviceCandidate>();
         foreach (var remote in remoteDevices.Value)
         {
-            var shadow = await airPlusClient.GetShadowAsync(token.Value.AccessToken, remote, cancellationToken);
+            var shadow = await airPlusClient.GetDeviceDataAsync(
+                token.Value.AccessToken,
+                remote,
+                cancellationToken);
             candidates.Add(new PhilipsAirPlusDeviceCandidate(
                 remote.DeviceId, remote.FriendlyName, remote.ProductType,
                 shadow.Succeeded && shadow.Value.ValueKind != JsonValueKind.Undefined
@@ -359,7 +392,10 @@ public sealed class PhilipsAirPlusHubService(
             return new DeviceOperationResult(remote.Status, Detail: remote.Detail);
         }
 
-        var shadow = await airPlusClient.GetShadowAsync(token.Value.AccessToken, remote.Value, cancellationToken);
+        var shadow = await airPlusClient.GetDeviceDataAsync(
+            token.Value.AccessToken,
+            remote.Value,
+            cancellationToken);
         if (!shadow.Succeeded)
         {
             return new DeviceOperationResult(shadow.Status, Detail: shadow.Detail);
@@ -668,42 +704,35 @@ public sealed class PhilipsAirPlusHubService(
         throw new InvalidOperationException("Could not create a unique Philips Air+ device name.");
     }
 
-    private static bool TryExtractAuthorizationCode(
-        string value, out string code, out string? state)
+    private static bool IsValidVerificationId(string value) =>
+        value.Length is >= 40 and <= 128 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+    private static bool IsValidVerificationCode(string value) =>
+        value.Length is > 0 and <= 32 &&
+        value.All(char.IsAsciiLetterOrDigit);
+
+    private static bool IsValidEmail(string value)
     {
-        code = string.Empty;
-        state = null;
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value) || value != value.Trim() || value.Length > 254 ||
+            value.Any(char.IsWhiteSpace) || value.Count(character => character == '@') != 1)
         {
             return false;
         }
 
-        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var redirect))
+        var at = value.IndexOf('@');
+        var local = value[..at];
+        var domain = value[(at + 1)..];
+        if (local.Length is < 1 or > 64 || local[0] == '.' || local[^1] == '.' ||
+            !domain.Contains('.', StringComparison.Ordinal) || domain.Length > 253)
         {
-            code = value.Trim();
-            return code.Length <= 4096 && !code.Contains(' ');
+            return false;
         }
 
-        foreach (var pair in redirect.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var separator = pair.IndexOf('=');
-            var key = Uri.UnescapeDataString(separator < 0 ? pair : pair[..separator]);
-            var decoded = Uri.UnescapeDataString(separator < 0 ? string.Empty : pair[(separator + 1)..]);
-            if (key == "code")
-            {
-                code = decoded;
-            }
-            else if (key == "state")
-            {
-                state = decoded;
-            }
-        }
-
-        return code.Length is > 0 and <= 4096;
+        return local.All(character =>
+                   char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-' or '+') &&
+               domain.Split('.').All(label => label.Length is > 0 and <= 63 &&
+                   label[0] != '-' && label[^1] != '-' &&
+                   label.All(character => char.IsAsciiLetterOrDigit(character) || character == '-'));
     }
-
-    private static bool FixedTimeEquals(string first, string second) =>
-        !string.IsNullOrWhiteSpace(first) && !string.IsNullOrWhiteSpace(second) &&
-        CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(first), Encoding.UTF8.GetBytes(second));
 }

@@ -1,0 +1,135 @@
+@page
+@model DaveBrain.Pages.Automation.IndexModel
+@{
+    ViewData["Title"] = "Actions";
+}
+
+<h1>Actions</h1>
+<p>
+    Actions are deterministic <code>device.setState</code> operations. Scripts, shell commands,
+    URLs, and expressions are not accepted.
+</p>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
+
+<h2>Actions</h2>
+<p>An action changes one enabled, mapped device. Choose at least one state field.</p>
+<form method="post" asp-page-handler="SaveAction" class="border rounded p-3 mb-3">
+    <input type="hidden" name="enabled" value="true" />
+    <div class="row g-2">
+        <div class="col-md-3"><input class="form-control" name="name" required maxlength="200" placeholder="Action name" /></div>
+        <div class="col-md-3">
+            <select class="form-select" name="targetDeviceId" required aria-label="Target device">
+                <option value="">Target device</option>
+                @foreach (var device in Model.Devices.Where(device => device.Enabled && device.Capabilities != DaveHome.DeviceCapabilities.None))
+                {
+                    <option value="@device.Id">@device.Name</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select class="form-select" name="isOn" aria-label="On or off">
+                <option value="">On/off unchanged</option>
+                <option value="true">Turn on</option>
+                <option value="false">Turn off</option>
+            </select>
+        </div>
+        <div class="col-md-1"><input class="form-control" name="brightness" type="number" min="0" max="100" placeholder="%" aria-label="Brightness" /></div>
+        <div class="col-md-1"><input class="form-control" name="colourX" type="number" min="0" max="1" step="0.001" placeholder="X" aria-label="Colour X" /></div>
+        <div class="col-md-1"><input class="form-control" name="colourY" type="number" min="0" max="1" step="0.001" placeholder="Y" aria-label="Colour Y" /></div>
+        <div class="col-md-1"><button class="btn btn-primary" type="submit">Add</button></div>
+    </div>
+</form>
+
+@if (Model.Actions.Count == 0)
+{
+    <p>No actions configured.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Name</th><th>Target</th><th>State change</th><th>Enabled</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var action in Model.Actions)
+        {
+            <tr>
+                <td colspan="5">
+                    <form method="post" asp-page-handler="SaveAction" class="row g-2">
+                        <input type="hidden" name="id" value="@action.Id" />
+                        <div class="col-md-3"><input class="form-control" name="name" value="@action.Name" maxlength="200" required /></div>
+                        <div class="col-md-3">
+                            <select class="form-select" name="targetDeviceId">
+                            @foreach (var device in Model.Devices.Where(device => device.Capabilities != DaveHome.DeviceCapabilities.None))
+                            {
+                                @if (device.Id == action.TargetDeviceId)
+                                {
+                                    <option value="@device.Id" selected>@device.Name</option>
+                                }
+                                else
+                                {
+                                    <option value="@device.Id">@device.Name</option>
+                                }
+                            }
+                            </select>
+                        </div>
+                        <div class="col-md-1">
+                            <select class="form-select" name="isOn" aria-label="On or off">
+                                @if (action.StateChange.IsOn is null) { <option value="" selected>--</option> } else { <option value="">--</option> }
+                                @if (action.StateChange.IsOn is true) { <option value="true" selected>On</option> } else { <option value="true">On</option> }
+                                @if (action.StateChange.IsOn is false) { <option value="false" selected>Off</option> } else { <option value="false">Off</option> }
+                            </select>
+                        </div>
+                        <div class="col-md-1"><input class="form-control" name="brightness" value="@action.StateChange.Brightness" type="number" min="0" max="100" placeholder="%" /></div>
+                        <div class="col-md-1"><input class="form-control" name="colourX" value="@action.StateChange.Colour?.X" type="number" min="0" max="1" step="0.001" placeholder="X" /></div>
+                        <div class="col-md-1"><input class="form-control" name="colourY" value="@action.StateChange.Colour?.Y" type="number" min="0" max="1" step="0.001" placeholder="Y" /></div>
+                        <div class="col-md-1">
+                            @if (action.Enabled) { <input name="enabled" type="checkbox" value="true" checked aria-label="Enabled" /> }
+                            else { <input name="enabled" type="checkbox" value="true" aria-label="Enabled" /> }
+                            <input type="hidden" name="enabled" value="false" />
+                        </div>
+                        <div class="col-md-1"><button class="btn btn-sm btn-secondary" type="submit">Save</button></div>
+                    </form>
+                    <form method="post" asp-page-handler="DeleteAction" class="mt-1">
+                        <input type="hidden" name="id" value="@action.Id" />
+                        <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<h2>Action sets</h2>
+<p>Action IDs execute in the comma-separated order entered.</p>
+<form method="post" asp-page-handler="SaveActionSet" class="border rounded p-3 mb-3">
+    <input type="hidden" name="enabled" value="true" />
+    <div class="row g-2">
+        <div class="col-md-4"><input class="form-control" name="name" required maxlength="200" placeholder="Action set name" /></div>
+        <div class="col-md-6"><input class="form-control" name="actionIds" required placeholder="Action IDs, in order" aria-label="Action IDs" /></div>
+        <div class="col-md-2"><button class="btn btn-primary" type="submit">Add</button></div>
+    </div>
+</form>
+@if (Model.ActionSets.Count == 0)
+{
+    <p>No action sets configured.</p>
+}
+else
+{
+    @foreach (var actionSet in Model.ActionSets)
+    {
+        <form method="post" asp-page-handler="SaveActionSet" class="row g-2 border-bottom py-2">
+            <input type="hidden" name="id" value="@actionSet.Id" />
+            <div class="col-md-3"><input class="form-control" name="name" value="@actionSet.Name" maxlength="200" required /></div>
+            <div class="col-md-6"><input class="form-control" name="actionIds" value="@string.Join(',', actionSet.ActionIds)" required /></div>
+            <div class="col-md-1">
+                @if (actionSet.Enabled) { <input name="enabled" type="checkbox" value="true" checked aria-label="Enabled" /> }
+                else { <input name="enabled" type="checkbox" value="true" aria-label="Enabled" /> }
+                <input type="hidden" name="enabled" value="false" />
+            </div>
+            <div class="col-md-1"><button class="btn btn-sm btn-secondary" type="submit">Save</button></div>
+            <div class="col-md-1">
+                <button class="btn btn-sm btn-outline-danger" type="submit" formaction="?handler=DeleteActionSet" formmethod="post" name="id" value="@actionSet.Id">Delete</button>
+            </div>
+        </form>
+    }
+}

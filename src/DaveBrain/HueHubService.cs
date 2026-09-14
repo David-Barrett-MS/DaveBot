@@ -34,6 +34,7 @@ public sealed class HueHubService(
     public string DeviceType => "hue.light";
 
     public IReadOnlyList<Hub> GetHubs() => homeStateStore.Current.HubsById.Values
+        .Where(hub => hub.ProviderType == "hue")
         .OrderBy(hub => hub.Name, StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
@@ -355,6 +356,42 @@ public sealed class HueHubService(
             hub.BridgeId,
             hub.TlsCertificateThumbprint,
             cancellationToken);
+    }
+
+    public async Task<HueLightQueryResult> RefreshMappedLightsAsync(
+        Guid hubId,
+        CancellationToken cancellationToken = default)
+    {
+        var candidates = await GetImportCandidatesAsync(hubId, cancellationToken);
+        if (!candidates.Succeeded)
+        {
+            return candidates;
+        }
+
+        var lightsByResourceId = candidates.Lights.ToDictionary(light => light.ResourceId);
+        var current = homeStateStore.Current;
+        var requiresUpdate = current.Document.Devices.Any(device =>
+            device.HubId == hubId &&
+            device.DeviceType == "hue.light" &&
+            device.ExternalResourceId is { } resourceId &&
+            lightsByResourceId.TryGetValue(resourceId, out var light) &&
+            (device.Capabilities != light.Capabilities || device.State != light.State));
+        if (!requiresUpdate)
+        {
+            return candidates;
+        }
+
+        await homeStateStore.UpdateAsync(state => state.Document with
+        {
+            Devices = state.Document.Devices.Select(device =>
+                device.HubId == hubId &&
+                device.DeviceType == "hue.light" &&
+                device.ExternalResourceId is { } resourceId &&
+                lightsByResourceId.TryGetValue(resourceId, out var light)
+                    ? device with { Capabilities = light.Capabilities, State = light.State }
+                    : device).ToArray(),
+        }, current.Revision, cancellationToken);
+        return candidates;
     }
 
     public async Task<HueSwitchQueryResult> GetSwitchImportCandidatesAsync(
@@ -1051,7 +1088,9 @@ public sealed class HueHubService(
     }
 
     private Hub? GetHub(Guid hubId) =>
-        homeStateStore.Current.HubsById.TryGetValue(hubId, out var hub) && hub.Enabled
+        homeStateStore.Current.HubsById.TryGetValue(hubId, out var hub) &&
+        hub.ProviderType == "hue" &&
+        hub.Enabled
             ? hub
             : null;
 

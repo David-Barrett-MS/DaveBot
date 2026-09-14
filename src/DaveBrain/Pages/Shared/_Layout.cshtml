@@ -1,5 +1,10 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
+@{
+    var currentPage = ViewContext.RouteData.Values["page"]?.ToString();
+    string ActiveNavigationClass(string page) =>
+        string.Equals(currentPage, page, StringComparison.OrdinalIgnoreCase) ? " active" : string.Empty;
+}
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,64 +16,63 @@
 </head>
 <body>
     <header>
-        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
+        <nav class="navbar navbar-light bg-white border-bottom box-shadow">
             <div class="container">
                 <a class="navbar-brand" asp-area="" asp-page="/Index">DaveBrain</a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
-                        aria-expanded="false" aria-label="Toggle navigation">
-                    <span class="navbar-toggler-icon"></span>
-                </button>
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
-                    <ul class="navbar-nav flex-grow-1">
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-page="/Index">Dashboard</a>
-                        </li>
-                        @if (User.Identity?.IsAuthenticated == true)
-                        {
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/Locations/Index">Locations</a>
-                            </li>
-                        }
-                        @if (User.IsInRole("Admin"))
-                        {
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/Hubs/Index">Hue bridges</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/AirPlus/Index">Philips Air+</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/Devices/Index">Devices</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/Commands/Index">Text commands</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/Automation/Index">Automation</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-page="/Data/Transfer">Import / export</a>
-                            </li>
-                        }
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-page="/Privacy">Privacy</a>
-                        </li>
-                    </ul>
-                </div>
+                @if (User.Identity?.IsAuthenticated == true)
+                {
+                    <button class="navbar-toggler d-md-none" type="button" data-bs-toggle="collapse"
+                            data-bs-target="#primary-sidebar" aria-controls="primary-sidebar"
+                            aria-expanded="false" aria-label="Toggle navigation menu">
+                        <span class="navbar-toggler-icon"></span>
+                    </button>
+                }
             </div>
         </nav>
     </header>
-    <div class="container">
-        <main role="main" class="pb-3">
+    <div class="app-shell">
+        @if (User.Identity?.IsAuthenticated == true)
+        {
+            <aside id="primary-sidebar" class="app-sidebar collapse d-md-block">
+                <nav aria-label="Primary navigation">
+                    <section class="sidebar-section" aria-labelledby="devices-navigation">
+                        <h2 id="devices-navigation" class="sidebar-heading">Devices</h2>
+                        @if (User.IsInRole("Admin"))
+                        {
+                            <a class="sidebar-link @(ActiveNavigationClass("/Devices/Index"))" asp-page="/Devices/Index">All</a>
+                        }
+                        <a class="sidebar-link @(ActiveNavigationClass("/Locations/Index"))" asp-page="/Locations/Index">Locations</a>
+                        @if (User.IsInRole("Admin"))
+                        {
+                            <a class="sidebar-link @(ActiveNavigationClass("/Hubs/Index"))" asp-page="/Hubs/Index">Hue Bridges</a>
+                            <a class="sidebar-link @(ActiveNavigationClass("/AirPlus/Index"))" asp-page="/AirPlus/Index">Philips Air+</a>
+                        }
+                    </section>
+                    @if (User.IsInRole("Admin"))
+                    {
+                        <section class="sidebar-section" aria-labelledby="automation-navigation">
+                            <h2 id="automation-navigation" class="sidebar-heading">Automation</h2>
+                            <a class="sidebar-link @(ActiveNavigationClass("/Automation/Triggers"))" asp-page="/Automation/Triggers">Triggers</a>
+                            <a class="sidebar-link @(ActiveNavigationClass("/Automation/Actions"))" asp-page="/Automation/Actions">Actions</a>
+                        </section>
+                        <section class="sidebar-section" aria-labelledby="control-navigation">
+                            <h2 id="control-navigation" class="sidebar-heading">Control</h2>
+                            <a class="sidebar-link @(ActiveNavigationClass("/Commands/Index"))" asp-page="/Commands/Index">Text Commands</a>
+                        </section>
+                        <section class="sidebar-section" aria-labelledby="system-navigation">
+                            <h2 id="system-navigation" class="sidebar-heading">System</h2>
+                            <a class="sidebar-link @(ActiveNavigationClass("/Data/Transfer"))" asp-page="/Data/Transfer">Import/export</a>
+                            <a class="sidebar-link @(ActiveNavigationClass("/System/Backup"))" asp-page="/System/Backup">Backup</a>
+                            <a class="sidebar-link @(ActiveNavigationClass("/System/Debug"))" asp-page="/System/Debug">Debug</a>
+                        </section>
+                    }
+                </nav>
+            </aside>
+        }
+        <main role="main" class="app-content container-fluid py-3">
             @RenderBody()
         </main>
     </div>
-
-    <footer class="border-top footer text-muted">
-        <div class="container">
-            &copy; 2026 - DaveBrain - <a asp-area="" asp-page="/Privacy">Privacy</a>
-        </div>
-    </footer>
 
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>

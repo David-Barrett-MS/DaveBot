@@ -74,6 +74,75 @@ public sealed class HueHubServiceTests
     }
 
     [Fact]
+    public async Task GetHubsExcludesOtherProviders()
+    {
+        var homeState = new HomeStateStore(new InMemoryHomePersistence());
+        await homeState.InitializeAsync();
+        var hueHub = new Hub(
+            Guid.NewGuid(),
+            "Kitchen bridge",
+            "hue",
+            "https://192.168.1.20/",
+            "hue-secret",
+            Enabled: true);
+        var airPlusHub = new Hub(
+            Guid.NewGuid(),
+            "Bedroom purifier",
+            "philips.airplus",
+            "https://airplus.example/",
+            "airplus-secret",
+            Enabled: true);
+        await homeState.UpdateAsync(
+            state => state.Document with { Hubs = [hueHub, airPlusHub] },
+            StoreRevision.Initial);
+        var service = new HueHubService(homeState, new FakeSecretStore(), new FakeHueBridgeClient());
+
+        var hubs = service.GetHubs();
+        var synchronization = await service.SynchronizeHubAsync(airPlusHub.Id);
+
+        var hub = Assert.Single(hubs);
+        Assert.Equal(hueHub.Id, hub.Id);
+        Assert.Equal(DeviceOperationStatus.ResourceNotFound, synchronization.Status);
+    }
+
+    [Fact]
+    public async Task RefreshMappedLightsUpdatesColourCapabilities()
+    {
+        var homeState = new HomeStateStore(new InMemoryHomePersistence());
+        await homeState.InitializeAsync();
+        var secrets = new FakeSecretStore();
+        var initialService = new HueHubService(homeState, secrets, new FakeHueBridgeClient());
+        var linked = await initialService.LinkAsync(
+            "Kitchen bridge",
+            new Uri("https://192.168.1.20/"),
+            "bridge-id");
+        var mappedLight = Assert.Single(homeState.Current.Document.Devices);
+        Assert.False(mappedLight.Capabilities.HasFlag(DeviceCapabilities.Colour));
+
+        var colourService = new HueHubService(
+            homeState,
+            secrets,
+            new FakeHueBridgeClient(
+                lights:
+                [
+                    new HueLightResource(
+                        "light-1",
+                        "Bridge light",
+                        DeviceCapabilities.OnOff |
+                        DeviceCapabilities.Brightness |
+                        DeviceCapabilities.Colour,
+                        new DeviceState(true, 40, new DeviceColour(0.168, 0.041))),
+                ]));
+
+        var refreshed = await colourService.RefreshMappedLightsAsync(linked.Hub!.Id);
+
+        Assert.True(refreshed.Succeeded);
+        var updated = Assert.Single(homeState.Current.Document.Devices);
+        Assert.True(updated.Capabilities.HasFlag(DeviceCapabilities.Colour));
+        Assert.Equal(new DeviceColour(0.168, 0.041), updated.State!.Colour);
+    }
+
+    [Fact]
     public async Task LinkSynchronizesClipButtonResourcesAsHueSwitches()
     {
         var homeState = new HomeStateStore(new InMemoryHomePersistence());
@@ -272,7 +341,8 @@ public sealed class HueHubServiceTests
         IReadOnlyList<HueSwitchResource>? switches = null,
         IReadOnlyList<HueSwitchResource>? streamUpdates = null,
         IReadOnlyList<HueMotionSensorResource>? motionSensors = null,
-        IReadOnlyList<HueEventResource>? streamResourceUpdates = null) : IHueBridgeClient
+        IReadOnlyList<HueEventResource>? streamResourceUpdates = null,
+        IReadOnlyList<HueLightResource>? lights = null) : IHueBridgeClient
     {
         private readonly IReadOnlyList<HueSwitchResource> _switches =
             switches ?? Array.Empty<HueSwitchResource>();
@@ -282,6 +352,15 @@ public sealed class HueHubServiceTests
             motionSensors ?? Array.Empty<HueMotionSensorResource>();
         private readonly IReadOnlyList<HueEventResource> _streamResourceUpdates =
             streamResourceUpdates ?? Array.Empty<HueEventResource>();
+        private readonly IReadOnlyList<HueLightResource> _lights =
+            lights ??
+            [
+                new HueLightResource(
+                    "light-1",
+                    "Bridge light",
+                    DeviceCapabilities.OnOff | DeviceCapabilities.Brightness,
+                    new DeviceState(true, 40)),
+            ];
 
         public Task<IReadOnlyList<HueBridgeDiscovery>> DiscoverAsync(
             CancellationToken cancellationToken = default) =>
@@ -304,11 +383,7 @@ public sealed class HueHubServiceTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new HueLightQueryResult(
                 DeviceOperationStatus.Succeeded,
-                [new HueLightResource(
-                    "light-1",
-                    "Bridge light",
-                    DeviceCapabilities.OnOff | DeviceCapabilities.Brightness,
-                    new DeviceState(true, 40))]));
+                _lights));
 
         public Task<HueSwitchQueryResult> GetSwitchesAsync(
             Uri bridgeAddress,

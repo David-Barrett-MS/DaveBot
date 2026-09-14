@@ -10,10 +10,20 @@ namespace DaveBrain.Pages.AirPlus;
 [Authorize(Policy = DaveIdentityPolicies.HubManagement)]
 public sealed class IndexModel(
     PhilipsAirPlusHubService airPlus,
-    PhilipsAirPlusOptions options,
     IHomeStateStore homeStateStore) : PageModel
 {
     private const string ProviderType = "philips.airplus";
+
+    public sealed class AirPlusDeviceImportSelection
+    {
+        public bool Selected { get; set; }
+
+        public string DeviceId { get; set; } = string.Empty;
+
+        public string DisplayName { get; set; } = string.Empty;
+
+        public Guid? LocationId { get; set; }
+    }
 
     public IReadOnlyList<Hub> Hubs { get; private set; } = Array.Empty<Hub>();
 
@@ -26,23 +36,17 @@ public sealed class IndexModel(
 
     public Guid? CandidateHubId { get; private set; }
 
-    public string? AuthorizationUri { get; private set; }
-
-    public string? AuthorizationState { get; private set; }
+    public string? VerificationId { get; private set; }
 
     public string? PendingHubName { get; private set; }
 
     public DeviceOperationResult? Result { get; private set; }
 
-    public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(options.ClientId) &&
-        !string.IsNullOrWhiteSpace(options.ClientSecret) &&
-        !string.IsNullOrWhiteSpace(options.RedirectUri);
-
     public void OnGet() => Load();
 
-    public async Task<IActionResult> OnPostBeginAuthorizationAsync(
+    public async Task<IActionResult> OnPostRequestEmailVerificationAsync(
         string hubName,
+        string email,
         CancellationToken cancellationToken)
     {
         Load();
@@ -53,17 +57,18 @@ public sealed class IndexModel(
 
         try
         {
-            var result = await airPlus.BeginAuthorizationAsync(userId, cancellationToken);
+            var result = await airPlus.RequestEmailVerificationAsync(
+                userId,
+                email,
+                cancellationToken);
             if (!result.Status.Equals(DeviceOperationStatus.Succeeded) ||
-                result.AuthorizationUri is null ||
-                string.IsNullOrWhiteSpace(result.State))
+                string.IsNullOrWhiteSpace(result.VerificationId))
             {
                 ModelState.AddModelError(string.Empty, result.Detail ?? result.Status.ToString());
                 return Page();
             }
 
-            AuthorizationUri = result.AuthorizationUri.AbsoluteUri;
-            AuthorizationState = result.State;
+            VerificationId = result.VerificationId;
             PendingHubName = hubName;
             return Page();
         }
@@ -74,10 +79,10 @@ public sealed class IndexModel(
         }
     }
 
-    public async Task<IActionResult> OnPostCompleteAuthorizationAsync(
+    public async Task<IActionResult> OnPostCompleteEmailVerificationAsync(
         string hubName,
-        string redirectUrlOrCode,
-        string state,
+        string verificationId,
+        string code,
         CancellationToken cancellationToken)
     {
         if (!TryGetAuthenticatedUserId(out var userId))
@@ -87,16 +92,18 @@ public sealed class IndexModel(
 
         try
         {
-            var result = await airPlus.CompleteAuthorizationAsync(
+            var result = await airPlus.CompleteEmailVerificationAsync(
                 userId,
-                redirectUrlOrCode,
-                state,
+                verificationId,
+                code,
                 hubName,
                 cancellationToken);
             if (!result.Status.Equals(DeviceOperationStatus.Succeeded))
             {
                 ModelState.AddModelError(string.Empty, result.Detail ?? result.Status.ToString());
                 Load();
+                VerificationId = verificationId;
+                PendingHubName = hubName;
                 return Page();
             }
 
@@ -107,6 +114,8 @@ public sealed class IndexModel(
         {
             ModelState.AddModelError(string.Empty, exception.Message);
             Load();
+            VerificationId = verificationId;
+            PendingHubName = hubName;
             return Page();
         }
     }
@@ -117,14 +126,7 @@ public sealed class IndexModel(
     {
         Load();
         CandidateHubId = hubId;
-        var result = await airPlus.GetUnmappedImportCandidatesAsync(hubId, cancellationToken);
-        if (!result.Succeeded)
-        {
-            ModelState.AddModelError(string.Empty, result.Detail ?? result.Status.ToString());
-            return Page();
-        }
-
-        Candidates = result.Devices;
+        await LoadCandidatesAsync(hubId, cancellationToken);
         return Page();
     }
 
@@ -163,39 +165,81 @@ public sealed class IndexModel(
         return Page();
     }
 
-    public async Task<IActionResult> OnPostImportAsync(
+    public async Task<IActionResult> OnPostImportSelectedAsync(
         Guid hubId,
-        string deviceId,
-        string displayName,
-        Guid? locationId,
+        List<AirPlusDeviceImportSelection>? selections,
         CancellationToken cancellationToken)
     {
-        try
+        var selected = (selections ?? []).Where(selection => selection.Selected).ToArray();
+        if (selected.Length == 0)
         {
-            var result = await airPlus.ImportDeviceAsync(
-                hubId,
-                deviceId,
-                displayName,
-                locationId,
-                cancellationToken);
-            if (!result.Succeeded)
-            {
-                ModelState.AddModelError(string.Empty, result.Detail ?? result.Status.ToString());
-                Load();
-                CandidateHubId = hubId;
-                return Page();
-            }
-
-            TempData["StatusMessage"] = $"Imported {displayName.Trim()}.";
-            return RedirectToPage();
-        }
-        catch (InvalidOperationException exception)
-        {
-            ModelState.AddModelError(string.Empty, exception.Message);
+            ModelState.AddModelError(string.Empty, "Select at least one Philips Air+ device to import.");
             Load();
             CandidateHubId = hubId;
+            await LoadCandidatesAsync(hubId, cancellationToken);
             return Page();
         }
+
+        var imported = 0;
+        var failed = 0;
+        foreach (var selection in selected)
+        {
+            var result = await ImportAsync(hubId, selection, cancellationToken);
+            if (!result.Succeeded)
+            {
+                failed++;
+                ModelState.AddModelError(
+                    string.Empty,
+                    $"{selection.DisplayName}: {result.Detail ?? result.Status.ToString()}");
+                continue;
+            }
+
+            imported++;
+        }
+
+        if (failed > 0)
+        {
+            ModelState.AddModelError(
+                string.Empty,
+                $"Imported {imported} of {selected.Length} selected Philips Air+ device(s).");
+            Load();
+            CandidateHubId = hubId;
+            await LoadCandidatesAsync(hubId, cancellationToken);
+            return Page();
+        }
+
+        TempData["StatusMessage"] = $"Imported {imported} Philips Air+ device(s).";
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostImportSingleAsync(
+        Guid hubId,
+        List<AirPlusDeviceImportSelection>? selections,
+        int selectionIndex,
+        CancellationToken cancellationToken)
+    {
+        if (selections is null || selectionIndex < 0 || selectionIndex >= selections.Count)
+        {
+            ModelState.AddModelError(string.Empty, "The selected Philips Air+ device could not be found.");
+            Load();
+            CandidateHubId = hubId;
+            await LoadCandidatesAsync(hubId, cancellationToken);
+            return Page();
+        }
+
+        var selection = selections[selectionIndex];
+        var result = await ImportAsync(hubId, selection, cancellationToken);
+        if (!result.Succeeded)
+        {
+            ModelState.AddModelError(string.Empty, result.Detail ?? result.Status.ToString());
+            Load();
+            CandidateHubId = hubId;
+            await LoadCandidatesAsync(hubId, cancellationToken);
+            return Page();
+        }
+
+        TempData["StatusMessage"] = $"Imported {selection.DisplayName.Trim()}.";
+        return RedirectToPage();
     }
 
     public async Task<IActionResult> OnPostDeviceActionAsync(
@@ -255,29 +299,8 @@ public sealed class IndexModel(
         return Page();
     }
 
-    public string FormatState(DeviceState? state)
-    {
-        if (state is null)
-        {
-            return "Unknown";
-        }
-
-        var readings = new List<string>();
-        if (state.IsOn is { } isOn)
-        {
-            readings.Add(isOn ? "On" : "Off");
-        }
-
-        if (state.Attributes is { } attributes)
-        {
-            foreach (var attribute in attributes.OrderBy(attribute => attribute.Key, StringComparer.Ordinal))
-            {
-                readings.Add($"{GetSensorLabel(attribute.Key)}: {attribute.Value}");
-            }
-        }
-
-        return readings.Count == 0 ? "No readings reported" : string.Join("; ", readings);
-    }
+    public string FormatState(DeviceState? state) =>
+        PhilipsAirPlusSensorFormatter.FormatState(state);
 
     private async Task<DeviceOperationResult> SetDeviceEnabledAsync(
         Guid deviceId,
@@ -302,6 +325,38 @@ public sealed class IndexModel(
         return !string.IsNullOrWhiteSpace(userId);
     }
 
+    private async Task<DeviceOperationResult> ImportAsync(
+        Guid hubId,
+        AirPlusDeviceImportSelection selection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await airPlus.ImportDeviceAsync(
+                hubId,
+                selection.DeviceId,
+                selection.DisplayName,
+                selection.LocationId,
+                cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return new DeviceOperationResult(DeviceOperationStatus.InvalidState, Detail: exception.Message);
+        }
+    }
+
+    private async Task LoadCandidatesAsync(Guid hubId, CancellationToken cancellationToken)
+    {
+        var result = await airPlus.GetUnmappedImportCandidatesAsync(hubId, cancellationToken);
+        if (!result.Succeeded)
+        {
+            ModelState.AddModelError(string.Empty, result.Detail ?? result.Status.ToString());
+            return;
+        }
+
+        Candidates = result.Devices;
+    }
+
     private void Load()
     {
         Hubs = airPlus.GetHubs();
@@ -311,22 +366,4 @@ public sealed class IndexModel(
             .ToArray();
     }
 
-    private static string GetSensorLabel(string attribute) => attribute switch
-    {
-        "pm25UgM3" => "PM2.5 (ug/m3)",
-        "allergenIndex" => "Allergen index",
-        "airQualityIndex" => "Air quality index",
-        "airQualityIndexTarget" => "Air quality target",
-        "gasLevel" => "Gas level",
-        "temperatureC" => "Temperature (C)",
-        "humidityPercent" => "Humidity (%)",
-        "humiditySetpointPercent" => "Humidity setpoint (%)",
-        "filterStatus0" => "Filter 0 (%)",
-        "filterStatus1" => "Filter 1 (%)",
-        "filterStatus2" => "Filter 2 (%)",
-        "productState" => "Product state",
-        "productError" => "Product error",
-        "fanSpeed" => "Fan speed",
-        _ => attribute,
-    };
 }

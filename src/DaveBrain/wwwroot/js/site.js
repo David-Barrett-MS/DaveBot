@@ -1,4 +1,12 @@
-﻿// Please see documentation at https://learn.microsoft.com/aspnet/core/client-side/bundling-and-minification
-// for details on configuring this project to bundle and minify static web assets.
+﻿document.addEventListener("click", event => {
+    const button = event.target.closest("[data-selection-css-class][data-selected]");
+    if (!button) {
+        return;
+    }
 
-// Write your JavaScript code.
+    const selectionCssClass = button.dataset.selectionCssClass;
+    const selected = button.dataset.selected === "true";
+    document.querySelectorAll(`.${selectionCssClass}`).forEach(selection => {
+        selection.checked = selected;
+    });
+});

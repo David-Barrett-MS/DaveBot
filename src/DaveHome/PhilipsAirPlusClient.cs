@@ -1,21 +1,35 @@
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+
+[assembly: InternalsVisibleTo("DaveBrain")]
+[assembly: InternalsVisibleTo("DaveBrain.Tests")]
 
 namespace DaveHome;
 
 public sealed record PhilipsAirPlusOptions
 {
-    public string ClientId { get; init; } = string.Empty;
-    public string ClientSecret { get; init; } = string.Empty;
-    public string RedirectUri { get; init; } = string.Empty;
+    public string ClientId { get; init; } = "-XsK7O6iEkLml77yDGDUi0ku";
+    public string GigyaApiKey { get; init; } = "4_JGZWlP8eQHpEqkvQElolbA";
+    public string RedirectUri { get; init; } = "com.philips.air://loginredirect";
     public Uri AuthorizationEndpoint { get; init; } =
         new("https://cdc.accounts.home.id/oidc/op/v1.0/4_JGZWlP8eQHpEqkvQElolbA/authorize");
     public Uri TokenEndpoint { get; init; } =
-        new("https://cdc.accounts.home.id/oidc/op/v1.0/4_JGZWlP8eQHpEqkvQElolbA/oauth/token");
+        new("https://cdc.accounts.home.id/oidc/op/v1.0/4_JGZWlP8eQHpEqkvQElolbA/token");
+    public Uri EmailOtpSendEndpoint { get; init; } =
+        new("https://cdc.accounts.home.id/accounts.auth.otp.email.sendCode");
+    public Uri EmailOtpLoginEndpoint { get; init; } =
+        new("https://cdc.accounts.home.id/accounts.auth.otp.email.login");
+    public Uri GigyaGetIdsEndpoint { get; init; } =
+        new("https://cdc.accounts.home.id/socialize.getIDs");
     public Uri ApiBaseUri { get; init; } = new("https://prod.eu-da.iot.versuni.com/");
     public Uri MqttUri { get; init; } = new("wss://ats.prod.eu-da.iot.versuni.com:443/mqtt");
     public string Scope { get; init; } =
@@ -27,21 +41,19 @@ public sealed record PhilipsAirPlusOptions
 
     public void Validate()
     {
-        if (string.IsNullOrWhiteSpace(ClientId) || string.IsNullOrWhiteSpace(ClientSecret))
-        {
-            throw new InvalidOperationException(
-                "PhilipsAirPlus:ClientId and PhilipsAirPlus:ClientSecret must be configured.");
-        }
-
         if (!Uri.TryCreate(RedirectUri, UriKind.Absolute, out var redirect) ||
-            (redirect.Scheme != Uri.UriSchemeHttps && redirect.Scheme != "com.philips.air"))
+            redirect.Scheme != "com.philips.air" ||
+            !string.Equals(redirect.Host, "loginredirect", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                "PhilipsAirPlus:RedirectUri must be an absolute HTTPS callback URI or the registered com.philips.air redirect URI.");
+                "PhilipsAirPlus:RedirectUri must be the registered com.philips.air://loginredirect URI.");
         }
 
         if (AuthorizationEndpoint.Scheme != Uri.UriSchemeHttps ||
             TokenEndpoint.Scheme != Uri.UriSchemeHttps ||
+            EmailOtpSendEndpoint.Scheme != Uri.UriSchemeHttps ||
+            EmailOtpLoginEndpoint.Scheme != Uri.UriSchemeHttps ||
+            GigyaGetIdsEndpoint.Scheme != Uri.UriSchemeHttps ||
             ApiBaseUri.Scheme != Uri.UriSchemeHttps ||
             MqttUri.Scheme != "wss" ||
             string.IsNullOrWhiteSpace(Scope) ||
@@ -53,16 +65,50 @@ public sealed record PhilipsAirPlusOptions
     }
 }
 
-public sealed record PhilipsAirPlusAccessToken(
-    string AccessToken,
-    string RefreshToken,
-    DateTimeOffset ExpiresAtUtc);
+// Credentials remain opaque outside the trusted home and brain assemblies.
+public sealed record PhilipsAirPlusAccessToken
+{
+    public PhilipsAirPlusAccessToken()
+    {
+    }
 
-public sealed record PhilipsAirPlusRemoteDevice(
-    string DeviceId,
-    string FriendlyName,
-    string? ProductType,
-    string ThingName);
+    internal PhilipsAirPlusAccessToken(
+        string accessToken, string refreshToken, DateTimeOffset expiresAtUtc)
+    {
+        AccessToken = accessToken;
+        RefreshToken = refreshToken;
+        ExpiresAtUtc = expiresAtUtc;
+    }
+
+    [JsonInclude]
+    internal string AccessToken { get; init; } = string.Empty;
+    [JsonInclude]
+    internal string RefreshToken { get; init; } = string.Empty;
+    [JsonInclude]
+    internal DateTimeOffset ExpiresAtUtc { get; init; }
+}
+
+public sealed class PhilipsAirPlusRemoteDevice
+{
+    public PhilipsAirPlusRemoteDevice(string deviceId, string friendlyName, string? productType)
+        : this(deviceId, friendlyName, productType, string.Empty)
+    {
+    }
+
+    internal PhilipsAirPlusRemoteDevice(
+        string deviceId, string friendlyName, string? productType, string thingName)
+    {
+        DeviceId = deviceId;
+        FriendlyName = friendlyName;
+        ProductType = productType;
+        ThingName = thingName;
+    }
+
+    public string DeviceId { get; }
+    public string FriendlyName { get; }
+    public string? ProductType { get; }
+    internal string ThingName { get; }
+}
 
 public sealed record PhilipsAirPlusRequestResult<T>(
     DeviceOperationStatus Status,
@@ -72,11 +118,51 @@ public sealed record PhilipsAirPlusRequestResult<T>(
     public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
 }
 
+// The verification token is intentionally inaccessible outside this client.
+public sealed class PhilipsAirPlusEmailVerificationTicket
+{
+    internal PhilipsAirPlusEmailVerificationTicket(string email, string verificationToken)
+    {
+        Email = email;
+        VerificationToken = verificationToken;
+    }
+
+    public PhilipsAirPlusEmailVerificationTicket()
+    {
+    }
+
+    internal string? Email { get; }
+    internal string? VerificationToken { get; }
+}
+
+public interface IPhilipsAirPlusRegistrationHttpClientFactory
+{
+    HttpClient CreateClient();
+}
+
+public sealed class PhilipsAirPlusRegistrationHttpClientFactory :
+    IPhilipsAirPlusRegistrationHttpClientFactory
+{
+    public HttpClient CreateClient() => new(new HttpClientHandler
+    {
+        UseCookies = true,
+        CookieContainer = new CookieContainer(),
+        AllowAutoRedirect = false,
+    }, disposeHandler: true)
+    {
+        Timeout = Timeout.InfiniteTimeSpan,
+    };
+}
+
 public interface IPhilipsAirPlusClient
 {
-    Task<PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>> ExchangeAuthorizationCodeAsync(
+    Task<PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>> RequestEmailVerificationAsync(
+        string email,
+        CancellationToken cancellationToken = default);
+
+    Task<PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>> CompleteEmailVerificationAsync(
         string code,
-        string codeVerifier,
+        PhilipsAirPlusEmailVerificationTicket verificationTicket,
         CancellationToken cancellationToken = default);
 
     Task<PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>> RefreshTokenAsync(
@@ -96,6 +182,12 @@ public interface IPhilipsAirPlusClient
         PhilipsAirPlusRemoteDevice device,
         CancellationToken cancellationToken = default);
 
+    Task<PhilipsAirPlusRequestResult<JsonElement>> GetDeviceDataAsync(
+        string accessToken,
+        PhilipsAirPlusRemoteDevice device,
+        CancellationToken cancellationToken = default) =>
+        GetShadowAsync(accessToken, device, cancellationToken);
+
     Task<PhilipsAirPlusRequestResult<JsonElement>> SetFanSpeedAsync(
         string accessToken,
         PhilipsAirPlusRemoteDevice device,
@@ -103,37 +195,163 @@ public interface IPhilipsAirPlusClient
         CancellationToken cancellationToken = default);
 }
 
-public sealed class PhilipsAirPlusClient(
-    HttpClient httpClient,
-    PhilipsAirPlusOptions options) : IPhilipsAirPlusClient
+public sealed class PhilipsAirPlusClient : IPhilipsAirPlusClient
 {
+    private static readonly string[] EnvironmentalNcpPorts = ["Status", "filtRd", "devRd", "Config"];
+
     private const int MaximumWebSocketMessageBytes = 65_536;
+    private const int MaximumAuthenticationResponseBytes = 65_536;
+    private readonly HttpClient httpClient;
+    private readonly PhilipsAirPlusOptions options;
+    private readonly IPhilipsAirPlusRegistrationHttpClientFactory registrationHttpClientFactory;
+
+    internal PhilipsAirPlusClient(HttpClient httpClient, PhilipsAirPlusOptions options)
+        : this(httpClient, options, new PhilipsAirPlusRegistrationHttpClientFactory())
+    {
+    }
+
+    public PhilipsAirPlusClient(
+        HttpClient httpClient,
+        PhilipsAirPlusOptions options,
+        IPhilipsAirPlusRegistrationHttpClientFactory registrationHttpClientFactory)
+    {
+        this.httpClient = httpClient;
+        this.options = options;
+        this.registrationHttpClientFactory = registrationHttpClientFactory;
+    }
+
+    public async Task<PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>>
+        RequestEmailVerificationAsync(string email, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, options.EmailOtpSendEndpoint)
+            {
+                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["email"] = email,
+                    ["apiKey"] = options.GigyaApiKey,
+                    ["format"] = "json",
+                }),
+            };
+            using var timeout = CreateTimeout(cancellationToken);
+            using var response = await httpClient.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                    ToStatus(response.StatusCode), Detail: "Email verification could not be requested.");
+            }
+
+            using var document = await ReadAuthenticationJsonAsync(response, timeout.Token);
+            if (!HasSuccessErrorCode(document.RootElement) ||
+                !TryGetString(document.RootElement, "vToken", out var verificationToken))
+            {
+                return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                    ToStatus(response.StatusCode), Detail: "Email verification could not be requested.");
+            }
+
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                DeviceOperationStatus.Succeeded,
+                new PhilipsAirPlusEmailVerificationTicket(email, verificationToken));
+        }
+        catch (HttpRequestException)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                DeviceOperationStatus.BridgeUnavailable, Detail: "Philips Air+ could not be reached.");
+        }
+        catch (JsonException)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                DeviceOperationStatus.InvalidState, Detail: "The email verification response was invalid.");
+        }
+        catch (InvalidDataException)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                DeviceOperationStatus.InvalidState, Detail: "The email verification response was too large.");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusEmailVerificationTicket>(
+                DeviceOperationStatus.TimedOut, Detail: "Email verification timed out.");
+        }
+    }
 
     public async Task<PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>>
-        ExchangeAuthorizationCodeAsync(
+        CompleteEmailVerificationAsync(
             string code,
-            string codeVerifier,
-            CancellationToken cancellationToken = default) =>
-        await RequestTokenAsync(
-            new Dictionary<string, string>
+            PhilipsAirPlusEmailVerificationTicket verificationTicket,
+            CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(verificationTicket.Email) ||
+            string.IsNullOrWhiteSpace(verificationTicket.VerificationToken))
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                DeviceOperationStatus.InvalidState, Detail: "The email verification request is invalid.");
+        }
+
+        using var registrationClient = registrationHttpClientFactory.CreateClient();
+        try
+        {
+            var sessionToken = await VerifyEmailCodeAsync(
+                registrationClient, verificationTicket.Email, code,
+                verificationTicket.VerificationToken, cancellationToken);
+            if (!sessionToken.Succeeded || sessionToken.Value is null)
             {
-                ["client_id"] = options.ClientId,
-                ["client_secret"] = options.ClientSecret,
-                ["grant_type"] = "authorization_code",
-                ["code"] = code,
-                ["redirect_uri"] = options.RedirectUri,
-                ["code_verifier"] = codeVerifier,
-            },
-            cancellationToken);
+                return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                    sessionToken.Status, Detail: sessionToken.Detail);
+            }
+
+            var authorization = await AuthorizeEmailSessionAsync(
+                registrationClient, sessionToken.Value, cancellationToken);
+            if (!authorization.Succeeded || authorization.Value is null)
+            {
+                return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                    authorization.Status, Detail: authorization.Detail);
+            }
+
+            return await RequestTokenAsync(
+                registrationClient,
+                new Dictionary<string, string>
+                {
+                    ["client_id"] = options.ClientId,
+                    ["grant_type"] = "authorization_code",
+                    ["code"] = authorization.Value.Code,
+                    ["redirect_uri"] = options.RedirectUri,
+                    ["code_verifier"] = authorization.Value.CodeVerifier,
+                },
+                cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                DeviceOperationStatus.BridgeUnavailable, Detail: "Philips Air+ could not be reached.");
+        }
+        catch (JsonException)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                DeviceOperationStatus.InvalidState, Detail: "The email verification response was invalid.");
+        }
+        catch (InvalidDataException)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                DeviceOperationStatus.InvalidState, Detail: "The email verification response was too large.");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
+                DeviceOperationStatus.TimedOut, Detail: "Email verification timed out.");
+        }
+    }
 
     public async Task<PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>> RefreshTokenAsync(
         PhilipsAirPlusAccessToken token,
         CancellationToken cancellationToken = default) =>
         await RequestTokenAsync(
+            httpClient,
             new Dictionary<string, string>
             {
                 ["client_id"] = options.ClientId,
-                ["client_secret"] = options.ClientSecret,
                 ["grant_type"] = "refresh_token",
                 ["refresh_token"] = token.RefreshToken,
                 ["access_token"] = token.AccessToken,
@@ -213,6 +431,37 @@ public sealed class PhilipsAirPlusClient(
         CancellationToken cancellationToken = default) =>
         ShadowRoundTripAsync(accessToken, device, "get", "{}", cancellationToken);
 
+    public async Task<PhilipsAirPlusRequestResult<JsonElement>> GetDeviceDataAsync(
+        string accessToken,
+        PhilipsAirPlusRemoteDevice device,
+        CancellationToken cancellationToken = default)
+    {
+        var shadow = await GetShadowAsync(accessToken, device, cancellationToken);
+        if (!shadow.Succeeded)
+        {
+            return shadow;
+        }
+
+        var portResults = await Task.WhenAll(EnvironmentalNcpPorts.Select(
+            portName => GetNcpPortAsync(accessToken, device, portName, cancellationToken)));
+
+        var ncpPorts = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        for (var i = 0; i < EnvironmentalNcpPorts.Length; i++)
+        {
+            var port = portResults[i];
+            if (port.Succeeded && port.Value.ValueKind == JsonValueKind.Object)
+            {
+                ncpPorts.Add(EnvironmentalNcpPorts[i], port.Value);
+            }
+        }
+
+        return ncpPorts.Count == 0
+            ? shadow
+            : new PhilipsAirPlusRequestResult<JsonElement>(
+                DeviceOperationStatus.Succeeded,
+                AddNcpPorts(shadow.Value, ncpPorts));
+    }
+
     public Task<PhilipsAirPlusRequestResult<JsonElement>> SetFanSpeedAsync(
         string accessToken,
         PhilipsAirPlusRemoteDevice device,
@@ -225,7 +474,123 @@ public sealed class PhilipsAirPlusClient(
             $"{{\"state\":{{\"desired\":{{\"om\":{fanSpeed}}}}}}}",
             cancellationToken);
 
+    private async Task<PhilipsAirPlusRequestResult<string>> VerifyEmailCodeAsync(
+        HttpClient registrationClient,
+        string email,
+        string code,
+        string verificationToken,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, options.EmailOtpLoginEndpoint)
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["email"] = email,
+                ["code"] = code,
+                ["vToken"] = verificationToken,
+                ["apiKey"] = options.GigyaApiKey,
+                ["format"] = "json",
+            }),
+        };
+        using var timeout = CreateTimeout(cancellationToken);
+        using var response = await registrationClient.SendAsync(
+            request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new PhilipsAirPlusRequestResult<string>(
+                ToStatus(response.StatusCode), Detail: "Email verification was rejected.");
+        }
+
+        using var document = await ReadAuthenticationJsonAsync(response, timeout.Token);
+        if (!HasSuccessErrorCode(document.RootElement) ||
+            !document.RootElement.TryGetProperty("sessionInfo", out var sessionInfo) ||
+            !TryGetString(sessionInfo, "cookieValue", out var sessionToken))
+        {
+            return new PhilipsAirPlusRequestResult<string>(
+                DeviceOperationStatus.InvalidState, Detail: "Email verification was rejected.");
+        }
+
+        return new PhilipsAirPlusRequestResult<string>(DeviceOperationStatus.Succeeded, sessionToken);
+    }
+
+    private async Task<PhilipsAirPlusRequestResult<AuthorizationCode>> AuthorizeEmailSessionAsync(
+        HttpClient registrationClient,
+        string sessionToken,
+        CancellationToken cancellationToken)
+    {
+        var verifier = Base64Url(RandomNumberGenerator.GetBytes(64));
+        var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+        var authorizeUri = AddQuery(options.AuthorizationEndpoint, new Dictionary<string, string>
+        {
+            ["client_id"] = options.ClientId,
+            ["response_type"] = "code",
+            ["redirect_uri"] = options.RedirectUri,
+            ["scope"] = options.Scope,
+            ["state"] = Base64Url(RandomNumberGenerator.GetBytes(32)),
+            ["code_challenge"] = challenge,
+            ["code_challenge_method"] = "S256",
+            ["prompt"] = "none",
+        });
+
+        using var timeout = CreateTimeout(cancellationToken);
+        using var authorizeRequest = new HttpRequestMessage(HttpMethod.Get, authorizeUri);
+        using var authorizeResponse = await registrationClient.SendAsync(
+            authorizeRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (!IsRedirect(authorizeResponse.StatusCode) ||
+            !TryGetLocationQueryValue(authorizeResponse, "context", out var context))
+        {
+            return new PhilipsAirPlusRequestResult<AuthorizationCode>(
+                DeviceOperationStatus.InvalidState, Detail: "Philips Air+ authorization could not be completed.");
+        }
+
+        using var idsRequest = new HttpRequestMessage(HttpMethod.Post, options.GigyaGetIdsEndpoint)
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["APIKey"] = options.GigyaApiKey,
+                ["includeTicket"] = "true",
+                ["format"] = "json",
+            }),
+        };
+        using var idsResponse = await registrationClient.SendAsync(
+            idsRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (!idsResponse.IsSuccessStatusCode)
+        {
+            return new PhilipsAirPlusRequestResult<AuthorizationCode>(
+                ToStatus(idsResponse.StatusCode), Detail: "Philips Air+ authorization could not be completed.");
+        }
+
+        using var ids = await ReadAuthenticationJsonAsync(idsResponse, timeout.Token);
+        if (!TryGetString(ids.RootElement, "gmidTicket", out var gmidTicket))
+        {
+            return new PhilipsAirPlusRequestResult<AuthorizationCode>(
+                DeviceOperationStatus.InvalidState, Detail: "Philips Air+ authorization could not be completed.");
+        }
+
+        var continueEndpoint = new Uri(options.AuthorizationEndpoint.AbsoluteUri.TrimEnd('/') + "/continue");
+        using var continueRequest = new HttpRequestMessage(HttpMethod.Get, AddQuery(continueEndpoint,
+            new Dictionary<string, string>
+            {
+                ["context"] = context,
+                ["login_token"] = sessionToken,
+                ["gmidTicket"] = gmidTicket,
+                ["client_id"] = options.ClientId,
+            }));
+        using var continueResponse = await registrationClient.SendAsync(
+            continueRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (!IsRedirect(continueResponse.StatusCode) ||
+            !TryGetLocationQueryValue(continueResponse, "code", out var code))
+        {
+            return new PhilipsAirPlusRequestResult<AuthorizationCode>(
+                DeviceOperationStatus.InvalidState, Detail: "Philips Air+ authorization could not be completed.");
+        }
+
+        return new PhilipsAirPlusRequestResult<AuthorizationCode>(
+            DeviceOperationStatus.Succeeded, new AuthorizationCode(code, verifier));
+    }
+
     private async Task<PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>> RequestTokenAsync(
+        HttpClient client,
         IReadOnlyDictionary<string, string> values,
         CancellationToken cancellationToken,
         string? fallbackRefreshToken = null)
@@ -237,15 +602,15 @@ public sealed class PhilipsAirPlusClient(
                 Content = new FormUrlEncodedContent(values),
             };
             using var timeout = CreateTimeout(cancellationToken);
-            using var response = await httpClient.SendAsync(request, timeout.Token);
+            using var response = await client.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
                 return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
                     ToStatus(response.StatusCode), Detail: "Philips Air+ token exchange was rejected.");
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            using var document = await ReadAuthenticationJsonAsync(response, timeout.Token);
             if (!TryGetString(document.RootElement, "access_token", out var accessToken))
             {
                 return new PhilipsAirPlusRequestResult<PhilipsAirPlusAccessToken>(
@@ -287,6 +652,82 @@ public sealed class PhilipsAirPlusClient(
         }
     }
 
+    private static bool HasSuccessErrorCode(JsonElement element) =>
+        element.TryGetProperty("errorCode", out var errorCode) &&
+        errorCode.ValueKind == JsonValueKind.Number &&
+        errorCode.TryGetInt32(out var code) && code == 0;
+
+    private static bool IsRedirect(HttpStatusCode status) =>
+        status is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or
+            HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or
+            HttpStatusCode.PermanentRedirect;
+
+    private static Uri AddQuery(Uri endpoint, IReadOnlyDictionary<string, string> values)
+    {
+        var builder = new UriBuilder(endpoint)
+        {
+            Query = string.Join("&", values.Select(pair =>
+                $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")),
+        };
+        return builder.Uri;
+    }
+
+    private static bool TryGetLocationQueryValue(
+        HttpResponseMessage response, string name, out string value)
+    {
+        value = string.Empty;
+        if (response.Headers.Location is not { } location ||
+            !Uri.TryCreate(location.IsAbsoluteUri ? location.AbsoluteUri : location.OriginalString,
+                UriKind.Absolute, out var redirect))
+        {
+            return false;
+        }
+
+        foreach (var pair in redirect.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = pair.IndexOf('=');
+            if (string.Equals(Uri.UnescapeDataString(separator < 0 ? pair : pair[..separator]),
+                    name, StringComparison.Ordinal) &&
+                separator >= 0)
+            {
+                value = Uri.UnescapeDataString(pair[(separator + 1)..]);
+                return !string.IsNullOrWhiteSpace(value) && value.Length <= 4096;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task<JsonDocument> ReadAuthenticationJsonAsync(
+        HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var output = new MemoryStream();
+        var buffer = new byte[4096];
+        while (true)
+        {
+            var read = await input.ReadAsync(buffer.AsMemory(), cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            if (output.Length + read > MaximumAuthenticationResponseBytes)
+            {
+                throw new InvalidDataException();
+            }
+
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+        }
+
+        return JsonDocument.Parse(output.ToArray());
+    }
+
+    private static string Base64Url(byte[] data) =>
+        Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private sealed record AuthorizationCode(string Code, string CodeVerifier);
+
     private async Task<PhilipsAirPlusRequestResult<JsonDocument>> GetJsonAsync(
         string path,
         string accessToken,
@@ -306,10 +747,9 @@ public sealed class PhilipsAirPlusClient(
                     ToStatus(response.StatusCode), Detail: "Philips Air+ rejected the request.");
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             return new PhilipsAirPlusRequestResult<JsonDocument>(
                 DeviceOperationStatus.Succeeded,
-                await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken));
+                await ReadAuthenticationJsonAsync(response, timeout.Token));
         }
         catch (HttpRequestException)
         {
@@ -321,6 +761,11 @@ public sealed class PhilipsAirPlusClient(
             return new PhilipsAirPlusRequestResult<JsonDocument>(
                 DeviceOperationStatus.InvalidState, Detail: "The Philips Air+ response was invalid.");
         }
+        catch (InvalidDataException)
+        {
+            return new PhilipsAirPlusRequestResult<JsonDocument>(
+                DeviceOperationStatus.InvalidState, Detail: "The Philips Air+ response was too large.");
+        }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return new PhilipsAirPlusRequestResult<JsonDocument>(
@@ -329,6 +774,236 @@ public sealed class PhilipsAirPlusClient(
     }
 
     private async Task<PhilipsAirPlusRequestResult<JsonElement>> ShadowRoundTripAsync(
+        string accessToken,
+        PhilipsAirPlusRemoteDevice device,
+        string operation,
+        string payload,
+        CancellationToken cancellationToken)
+    {
+        return await ShadowRoundTripCoreAsync(
+            accessToken,
+            device,
+            operation,
+            payload,
+            cancellationToken);
+    }
+
+        private async Task<PhilipsAirPlusRequestResult<JsonElement>> GetNcpPortAsync(
+            string accessToken,
+            PhilipsAirPlusRemoteDevice device,
+            string portName,
+            CancellationToken cancellationToken)
+        {
+            var account = await GetAccountIdAsync(accessToken, cancellationToken);
+            if (!account.Succeeded || account.Value is null)
+            {
+                return new PhilipsAirPlusRequestResult<JsonElement>(account.Status, Detail: account.Detail);
+            }
+
+                var signature = await GetJsonAsync("/api/da/user/self/signature", accessToken, cancellationToken);
+            if (!signature.Succeeded || signature.Value is not { } signatureDocument)
+            {
+                return new PhilipsAirPlusRequestResult<JsonElement>(
+                    signature.Status,
+                    Detail: signature.Detail);
+            }
+
+            string authorizerSignature;
+            using (signatureDocument)
+            {
+                if (!TryGetString(signatureDocument.RootElement, "signature", out authorizerSignature))
+                {
+                    return new PhilipsAirPlusRequestResult<JsonElement>(
+                        DeviceOperationStatus.InvalidState,
+                        Detail: "The Philips Air+ signature response was invalid.");
+                }
+            }
+
+            var responseTopic = $"da_ctrl/{device.ThingName}/from_ncp";
+            var correlationId = Guid.NewGuid().ToString();
+            var payload = JsonSerializer.Serialize(new
+            {
+                cid = correlationId,
+                time = DateTimeOffset.UtcNow.ToString(
+                    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                    System.Globalization.CultureInfo.InvariantCulture),
+                @type = "command",
+                cn = "getPort",
+                ct = "mobile",
+                data = new { portName },
+            });
+            RuntimeAuditContext.Write(
+                "External MQTT request",
+                $"PUBLISH da_ctrl/[redacted-device]/to_ncp\n{payload}",
+                "Awaiting response.");
+            try
+            {
+                using var socket = new ClientWebSocket();
+                socket.Options.AddSubProtocol("mqtt");
+                socket.Options.SetRequestHeader("x-amz-customauthorizer-name", "CustomAuthorizer");
+                socket.Options.SetRequestHeader("x-amz-customauthorizer-signature", authorizerSignature);
+                socket.Options.SetRequestHeader("token-header", $"Bearer {accessToken}");
+                socket.Options.SetRequestHeader("content-type", "application/json");
+                socket.Options.SetRequestHeader("tenant", "da");
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(options.RequestTimeout);
+                await socket.ConnectAsync(options.MqttUri, timeout.Token);
+                await SendAsync(socket, PhilipsAirPlusMqtt311.CreateConnect(
+                    $"{account.Value}_{Guid.NewGuid():N}"), timeout.Token);
+                if (!PhilipsAirPlusMqtt311.IsAcceptedConnection(await ReceivePacketAsync(socket, timeout.Token)))
+                {
+                    WriteNcpResult(portName, "MQTT connection was rejected.");
+                    return new PhilipsAirPlusRequestResult<JsonElement>(
+                        DeviceOperationStatus.Unauthorized,
+                        Detail: "Philips Air+ MQTT connection was rejected.");
+                }
+
+                await SendAsync(
+                    socket,
+                    PhilipsAirPlusMqtt311.CreateSubscribe(1, [responseTopic]),
+                    timeout.Token);
+                if (!PhilipsAirPlusMqtt311.IsAcceptedSubscription(
+                        await ReceivePacketAsync(socket, timeout.Token), 1))
+                {
+                    WriteNcpResult(portName, "MQTT subscription was rejected.");
+                    return new PhilipsAirPlusRequestResult<JsonElement>(
+                        DeviceOperationStatus.Unauthorized,
+                        Detail: "Philips Air+ MQTT subscription was rejected.");
+                }
+
+                await SendAsync(
+                    socket,
+                    PhilipsAirPlusMqtt311.CreatePublish(
+                        $"da_ctrl/{device.ThingName}/to_ncp",
+                        Encoding.UTF8.GetBytes(payload)),
+                    timeout.Token);
+                while (true)
+                {
+                    var packet = await ReceivePacketAsync(socket, timeout.Token);
+                    if (packet.PacketType == 12)
+                    {
+                        await SendAsync(socket, [0xD0, 0x00], timeout.Token);
+                        continue;
+                    }
+
+                    if (!PhilipsAirPlusMqtt311.TryParsePublish(packet, out var topic, out var body) ||
+                        topic != responseTopic)
+                    {
+                        continue;
+                    }
+
+                    RuntimeAuditContext.Write(
+                        "External MQTT response",
+                        "SUBSCRIBE da_ctrl/[redacted-device]/from_ncp",
+                        Encoding.UTF8.GetString(body));
+                    using var response = JsonDocument.Parse(body);
+                    var root = response.RootElement;
+                    if (!TryGetString(root, "cn", out var commandName) || commandName != "getPort" ||
+                        (TryGetString(root, "cid", out var responseCorrelationId) &&
+                         !correlationId.StartsWith(responseCorrelationId, StringComparison.Ordinal) &&
+                         !responseCorrelationId.StartsWith(correlationId, StringComparison.Ordinal)))
+                    {
+                        continue;
+                    }
+
+                    if (root.TryGetProperty("status", out var status) &&
+                        (!status.TryGetInt32(out var statusCode) || statusCode != 0))
+                    {
+                        WriteNcpResult(portName, "The device rejected the getPort command.");
+                        return new PhilipsAirPlusRequestResult<JsonElement>(
+                            DeviceOperationStatus.InvalidState,
+                            Detail: "Philips Air+ rejected the environmental sensor request.");
+                    }
+
+                    if (!root.TryGetProperty("data", out var data) ||
+                        data.ValueKind != JsonValueKind.Object ||
+                        !TryGetString(data, "portName", out var responsePortName) ||
+                        !string.Equals(responsePortName, portName, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    return new PhilipsAirPlusRequestResult<JsonElement>(
+                        DeviceOperationStatus.Succeeded,
+                        data.Clone());
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                WriteNcpResult(portName, "Timed out while waiting for the device response.");
+                return new PhilipsAirPlusRequestResult<JsonElement>(
+                    DeviceOperationStatus.TimedOut,
+                    Detail: "Philips Air+ environmental sensor request timed out.");
+            }
+            catch (OperationCanceledException)
+            {
+                WriteNcpResult(portName, "The request was canceled while waiting for the device response.");
+                return new PhilipsAirPlusRequestResult<JsonElement>(
+                    DeviceOperationStatus.TimedOut,
+                    Detail: "Philips Air+ environmental sensor request was canceled.");
+            }
+            catch (WebSocketException exception)
+            {
+                WriteNcpResult(
+                    portName,
+                    $"MQTT {exception.WebSocketErrorCode}: {exception.Message}");
+                return new PhilipsAirPlusRequestResult<JsonElement>(
+                    DeviceOperationStatus.BridgeUnavailable,
+                    Detail: "Philips Air+ environmental sensor request could not connect.");
+            }
+            catch (JsonException)
+            {
+                WriteNcpResult(portName, "The device response was not valid JSON.");
+                return new PhilipsAirPlusRequestResult<JsonElement>(
+                    DeviceOperationStatus.InvalidState,
+                    Detail: "The Philips Air+ environmental sensor response was invalid.");
+            }
+            catch (Exception exception) when (exception is IOException or SocketException)
+            {
+                WriteNcpResult(portName, $"The MQTT connection was aborted: {exception.Message}");
+                return new PhilipsAirPlusRequestResult<JsonElement>(
+                    DeviceOperationStatus.BridgeUnavailable,
+                    Detail: "Philips Air+ environmental sensor request could not connect.");
+            }
+        }
+
+        private static JsonElement AddNcpPorts(
+            JsonElement shadow,
+            IReadOnlyDictionary<string, JsonElement> ncpPorts)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                if (shadow.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in shadow.EnumerateObject())
+                    {
+                        property.WriteTo(writer);
+                    }
+                }
+                else
+                {
+                    writer.WritePropertyName("shadow");
+                    shadow.WriteTo(writer);
+                }
+
+                writer.WritePropertyName("ncp");
+                writer.WriteStartObject();
+                foreach (var (portName, port) in ncpPorts)
+                {
+                    writer.WritePropertyName(portName);
+                    port.WriteTo(writer);
+                }
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+
+            using var document = JsonDocument.Parse(stream.ToArray());
+            return document.RootElement.Clone();
+        }
+
+    private async Task<PhilipsAirPlusRequestResult<JsonElement>> ShadowRoundTripCoreAsync(
         string accessToken,
         PhilipsAirPlusRemoteDevice device,
         string operation,
@@ -360,6 +1035,10 @@ public sealed class PhilipsAirPlusClient(
         }
 
         var prefix = $"$aws/things/{device.ThingName}/shadow";
+        RuntimeAuditContext.Write(
+            "External MQTT request",
+            $"PUBLISH $aws/things/[redacted-device]/shadow/{operation}\n{payload}",
+            "Awaiting response.");
         try
         {
             using var socket = new ClientWebSocket();
@@ -378,6 +1057,7 @@ public sealed class PhilipsAirPlusClient(
                 $"{account.Value}_{Guid.NewGuid():N}"), timeout.Token);
             if (!PhilipsAirPlusMqtt311.IsAcceptedConnection(await ReceivePacketAsync(socket, timeout.Token)))
             {
+                WriteShadowResult(operation, "MQTT connection was rejected.");
                 return new PhilipsAirPlusRequestResult<JsonElement>(
                     DeviceOperationStatus.Unauthorized, Detail: "Philips Air+ MQTT connection was rejected.");
             }
@@ -388,6 +1068,7 @@ public sealed class PhilipsAirPlusClient(
             if (!PhilipsAirPlusMqtt311.IsAcceptedSubscription(
                     await ReceivePacketAsync(socket, timeout.Token), 1))
             {
+                WriteShadowResult(operation, "MQTT subscription was rejected.");
                 return new PhilipsAirPlusRequestResult<JsonElement>(
                     DeviceOperationStatus.Unauthorized,
                     Detail: "Philips Air+ MQTT subscription was rejected.");
@@ -409,8 +1090,18 @@ public sealed class PhilipsAirPlusClient(
                     continue;
                 }
 
+                if (topic == acceptedTopic || topic == rejectedTopic)
+                {
+                    RuntimeAuditContext.Write(
+                        "External MQTT response",
+                        $"SUBSCRIBE $aws/things/[redacted-device]/shadow/{operation}/accepted, " +
+                        $"$aws/things/[redacted-device]/shadow/{operation}/rejected",
+                        Encoding.UTF8.GetString(body));
+                }
+
                 if (topic == rejectedTopic)
                 {
+                    WriteShadowResult(operation, "The device rejected the shadow request.");
                     return new PhilipsAirPlusRequestResult<JsonElement>(
                         DeviceOperationStatus.InvalidState,
                         Detail: "Philips Air+ rejected the requested device state.");
@@ -429,16 +1120,21 @@ public sealed class PhilipsAirPlusClient(
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            WriteShadowResult(operation, "Timed out while waiting for the device response.");
             return new PhilipsAirPlusRequestResult<JsonElement>(
                 DeviceOperationStatus.TimedOut, Detail: "Philips Air+ MQTT request timed out.");
         }
-        catch (WebSocketException)
+        catch (WebSocketException exception)
         {
+            WriteShadowResult(
+                operation,
+                $"MQTT {exception.WebSocketErrorCode}: {exception.Message}");
             return new PhilipsAirPlusRequestResult<JsonElement>(
                 DeviceOperationStatus.BridgeUnavailable, Detail: "Philips Air+ MQTT could not be reached.");
         }
         catch (JsonException)
         {
+            WriteShadowResult(operation, "The device response was not valid JSON.");
             return new PhilipsAirPlusRequestResult<JsonElement>(
                 DeviceOperationStatus.InvalidState, Detail: "The Philips Air+ shadow response was invalid.");
         }
@@ -450,6 +1146,18 @@ public sealed class PhilipsAirPlusClient(
         CancellationToken cancellationToken) =>
         await socket.SendAsync(packet, WebSocketMessageType.Binary, true, cancellationToken);
 
+    private static void WriteNcpResult(string portName, string result) =>
+        RuntimeAuditContext.Write(
+            "External MQTT result",
+            $"NCP getPort {portName}",
+            result);
+
+    private static void WriteShadowResult(string operation, string result) =>
+        RuntimeAuditContext.Write(
+            "External MQTT result",
+            $"Shadow {operation}",
+            result);
+
     private static async Task<PhilipsAirPlusMqttPacket> ReceivePacketAsync(
         ClientWebSocket socket,
         CancellationToken cancellationToken)
@@ -460,10 +1168,25 @@ public sealed class PhilipsAirPlusClient(
         do
         {
             result = await socket.ReceiveAsync(buffer, cancellationToken);
-            if (result.MessageType != WebSocketMessageType.Binary ||
-                data.Length + result.Count > MaximumWebSocketMessageBytes)
+            if (result.MessageType == WebSocketMessageType.Close)
             {
-                throw new WebSocketException(WebSocketError.InvalidMessageType);
+                throw new WebSocketException(
+                    WebSocketError.ConnectionClosedPrematurely,
+                    $"The MQTT server closed the connection with status {socket.CloseStatus}.");
+            }
+
+            if (result.MessageType != WebSocketMessageType.Binary)
+            {
+                throw new WebSocketException(
+                    WebSocketError.InvalidMessageType,
+                    $"Expected a binary MQTT frame but received {result.MessageType}.");
+            }
+
+            if (data.Length + result.Count > MaximumWebSocketMessageBytes)
+            {
+                throw new WebSocketException(
+                    WebSocketError.InvalidMessageType,
+                    "The MQTT frame exceeded the configured maximum size.");
             }
 
             await data.WriteAsync(buffer.AsMemory(0, result.Count), cancellationToken);
@@ -472,7 +1195,9 @@ public sealed class PhilipsAirPlusClient(
 
         if (!PhilipsAirPlusMqtt311.TryParsePacket(data.GetBuffer().AsSpan(0, checked((int)data.Length)), out var packet))
         {
-            throw new WebSocketException(WebSocketError.Faulted);
+            throw new WebSocketException(
+                WebSocketError.Faulted,
+                "The MQTT frame was malformed or contained more than one MQTT packet.");
         }
 
         return packet;
@@ -541,7 +1266,7 @@ public static class PhilipsAirPlusMqtt311
         packet.Header == 0x20 && packet.Body.Length == 2 && packet.Body[0] == 0 && packet.Body[1] == 0;
 
     public static bool IsAcceptedSubscription(PhilipsAirPlusMqttPacket packet, ushort packetId) =>
-        packet.Header == 0x90 && packet.Body.Length == 4 &&
+        packet.Header == 0x90 && packet.Body.Length >= 3 &&
         packet.Body[0] == (byte)(packetId >> 8) && packet.Body[1] == (byte)packetId &&
         packet.Body[2..].All(code => code == 0);
 
@@ -702,10 +1427,19 @@ public static class PhilipsAirPlusShadowMapper
         ("fanSpeed", ["om"]),
     ];
 
+    private static readonly (string Attribute, string Port, string Field)[] NcpAttributeFields =
+    [
+        ("pm25UgM3", "Status", "D03221"),
+        ("allergenIndex", "Status", "D03120"),
+        ("displayBrightnessPercent", "Status", "D03105"),
+        ("fanLevel", "Status", "D0310D"),
+        ("mainFilterRemainingHours", "filtRd", "D0540E"),
+        ("preFilterRemainingHours", "filtRd", "D0520D"),
+    ];
+
     public static DeviceState Map(JsonElement shadow)
     {
-        var source = GetState(shadow);
-        if (source.ValueKind != JsonValueKind.Object)
+        if (shadow.ValueKind != JsonValueKind.Object)
         {
             return new DeviceState(null, null);
         }
@@ -715,8 +1449,7 @@ public static class PhilipsAirPlusShadowMapper
         {
             foreach (var field in fields)
             {
-                if (source.TryGetProperty(field, out var value) &&
-                    TryGetScalar(value, out var scalar))
+                if (TryGetStateValue(shadow, field, out var value) && TryGetScalar(value, out var scalar))
                 {
                     attributes.Add(attribute, scalar);
                     break;
@@ -724,12 +1457,23 @@ public static class PhilipsAirPlusShadowMapper
             }
         }
 
+        foreach (var (attribute, port, field) in NcpAttributeFields)
+        {
+            if (!attributes.ContainsKey(attribute) &&
+                TryGetNcpValue(shadow, port, field, out var value) &&
+                TryGetScalar(value, out var scalar))
+            {
+                attributes.Add(attribute, scalar);
+            }
+        }
+
         bool? isOn = null;
-        if (source.TryGetProperty("powerOn", out var powerOn) && TryGetBoolean(powerOn, out var parsedPower))
+        if (TryGetStateValue(shadow, "powerOn", out var powerOn) &&
+            TryGetBoolean(powerOn, out var parsedPower))
         {
             isOn = parsedPower;
         }
-        else if (source.TryGetProperty("pwr", out var pwr) && TryGetBoolean(pwr, out parsedPower))
+        else if (TryGetStateValue(shadow, "pwr", out var pwr) && TryGetBoolean(pwr, out parsedPower))
         {
             isOn = parsedPower;
         }
@@ -737,26 +1481,49 @@ public static class PhilipsAirPlusShadowMapper
         return new DeviceState(isOn, null, Attributes: attributes.Count == 0 ? null : attributes);
     }
 
-    private static JsonElement GetState(JsonElement shadow)
+    private static bool TryGetStateValue(
+        JsonElement shadow,
+        string field,
+        out JsonElement value)
     {
+        value = default;
         if (shadow.ValueKind == JsonValueKind.Object &&
             shadow.TryGetProperty("state", out var state) &&
             state.ValueKind == JsonValueKind.Object)
         {
             if (state.TryGetProperty("reported", out var reported) &&
-                reported.ValueKind == JsonValueKind.Object)
+                reported.ValueKind == JsonValueKind.Object &&
+                reported.TryGetProperty(field, out value))
             {
-                return reported;
+                return true;
             }
 
             if (state.TryGetProperty("desired", out var desired) &&
                 desired.ValueKind == JsonValueKind.Object)
             {
-                return desired;
+                return desired.TryGetProperty(field, out value);
             }
         }
 
-        return shadow.ValueKind == JsonValueKind.Object ? shadow : default;
+        return shadow.ValueKind == JsonValueKind.Object &&
+            shadow.TryGetProperty(field, out value);
+    }
+
+    private static bool TryGetNcpValue(
+        JsonElement shadow,
+        string portName,
+        string field,
+        out JsonElement value)
+    {
+        value = default;
+        return shadow.ValueKind == JsonValueKind.Object &&
+            shadow.TryGetProperty("ncp", out var ncp) &&
+            ncp.ValueKind == JsonValueKind.Object &&
+            ncp.TryGetProperty(portName, out var port) &&
+            port.ValueKind == JsonValueKind.Object &&
+            port.TryGetProperty("properties", out var properties) &&
+            properties.ValueKind == JsonValueKind.Object &&
+            properties.TryGetProperty(field, out value);
     }
 
     private static bool TryGetScalar(JsonElement value, out string scalar)

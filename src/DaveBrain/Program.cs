@@ -23,8 +23,7 @@ var stateDirectory = builder.Configuration["DaveBot:StateDirectory"]
 var issuer = new Uri(builder.Configuration["DaveIdentity:Issuer"] ?? "https://brain.daves.tips");
 var speechOptions = SpeechTranscriptionOptions.FromConfiguration(builder.Configuration);
 speechOptions.Validate();
-var philipsAirPlusOptions = builder.Configuration.GetSection("PhilipsAirPlus")
-    .Get<PhilipsAirPlusOptions>() ?? new PhilipsAirPlusOptions();
+var philipsAirPlusOptions = new PhilipsAirPlusOptions();
 var earMtlsPort = builder.Configuration.GetValue<int?>("DaveBot:EarMtlsPort") ?? 8443;
 if (earMtlsPort is < 1 or > 65_535 || earMtlsPort == issuer.Port)
 {
@@ -64,6 +63,8 @@ builder.Services.AddSingleton<HomeDataTransferService>();
 builder.Services.AddSingleton<ICommandAuditStore, InMemoryCommandAuditStore>();
 builder.Services.AddSingleton<ISpeechCommandAuditStore, InMemorySpeechCommandAuditStore>();
 builder.Services.AddSingleton<IAutomationAuditStore, InMemoryAutomationAuditStore>();
+builder.Services.AddSingleton<AdminSessionDebugLog>();
+builder.Services.AddTransient<AdminSessionDebugHttpMessageHandler>();
 builder.Services.AddSingleton<AutomationConfigurationService>();
 builder.Services.AddSingleton<IAutomationEngine, AutomationEngine>();
 builder.Services.AddSingleton<ISecretStore>(
@@ -73,14 +74,16 @@ builder.Services.AddSingleton<ISecretStore>(
 builder.Services.AddHttpClient<IHueBridgeClient, HueBridgeClient>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
-});
+}).AddHttpMessageHandler<AdminSessionDebugHttpMessageHandler>();
 builder.Services.AddSingleton(philipsAirPlusOptions);
-builder.Services.AddSingleton<IPhilipsAirPlusAuthorizationStateStore,
-    InMemoryPhilipsAirPlusAuthorizationStateStore>();
+builder.Services.AddSingleton<IPhilipsAirPlusEmailVerificationStore,
+    InMemoryPhilipsAirPlusEmailVerificationStore>();
+builder.Services.AddSingleton<IPhilipsAirPlusRegistrationHttpClientFactory,
+    PhilipsAirPlusRegistrationHttpClientFactory>();
 builder.Services.AddHttpClient<IPhilipsAirPlusClient, PhilipsAirPlusClient>(client =>
 {
     client.Timeout = Timeout.InfiniteTimeSpan;
-});
+}).AddHttpMessageHandler<AdminSessionDebugHttpMessageHandler>();
 builder.Services.AddSingleton<HueHubService>();
 builder.Services.AddSingleton<IDeviceProvider>(provider => provider.GetRequiredService<HueHubService>());
 builder.Services.AddSingleton<PhilipsAirPlusHubService>();
@@ -151,6 +154,25 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    if (context.User.IsInRole("Admin") &&
+        HttpMethods.IsPost(context.Request.Method) &&
+        !context.Request.Path.StartsWithSegments("/System/Debug"))
+    {
+        var debugLog = context.RequestServices.GetRequiredService<AdminSessionDebugLog>();
+        var sessionId = debugLog.GetOrCreateSessionId(context);
+        using var auditScope = RuntimeAuditContext.Begin(debugLog.CreateSink(sessionId));
+        await next();
+        RuntimeAuditContext.Write(
+            "Admin UI action",
+            $"{context.Request.Method} {context.Request.Path}{context.Request.QueryString}",
+            $"HTTP {context.Response.StatusCode}");
+        return;
+    }
+
+    await next();
+});
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();
 async Task<IResult> ReadyHealthAsync(

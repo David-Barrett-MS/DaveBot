@@ -1,0 +1,125 @@
+@page
+@model DaveBrain.Pages.Automation.IndexModel
+@{
+    ViewData["Title"] = "Triggers";
+}
+
+<h1>Triggers</h1>
+<p>
+    State criteria uses <code>{"all":[{"field":"event","equals":"initial_press"},{"field":"button","equals":"1"}]}</code>.
+    Supported fields are <code>event</code>, <code>button</code>, <code>isOn</code>,
+    <code>brightness</code>, <code>colour.x</code>, <code>colour.y</code>,
+    <code>motion</code> (boolean), and <code>lightLevel</code> (0-65535).
+    For example: <code>{"all":[{"field":"motion","equals":true},{"field":"lightLevel","equals":5000}]}</code>.
+</p>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
+
+<form method="post" asp-page-handler="SaveTrigger" class="border rounded p-3 mb-3">
+    <input type="hidden" name="enabled" value="true" />
+    <div class="row g-2">
+        <div class="col-md-2"><input class="form-control" name="name" required maxlength="200" placeholder="Trigger name" /></div>
+        <div class="col-md-3">
+            <select class="form-select" name="sourceDeviceId" required aria-label="Hue event source">
+                <option value="">Hue switch button or motion sensor</option>
+                @foreach (var device in Model.Devices.Where(device =>
+                    device.DeviceType is "hue.switch" or "hue.motion-sensor"))
+                {
+                    <option value="@device.Id">@device.Name</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3"><input class="form-control" name="stateCriteriaJson" required maxlength="4096" placeholder='{"all":[{"field":"event","equals":"initial_press"}]}' aria-label="State criteria JSON" /></div>
+        <div class="col-md-2"><input class="form-control" name="actionSetIds" required placeholder="Action set IDs, in order" aria-label="Action set IDs" /></div>
+        <div class="col-md-1"><input class="form-control" name="cooldownSeconds" value="0" type="number" min="0" max="86400" aria-label="Cooldown seconds" /></div>
+        <div class="col-md-1"><button class="btn btn-primary" type="submit">Add</button></div>
+    </div>
+</form>
+
+@if (Model.Triggers.Count == 0)
+{
+    <p>No triggers configured.</p>
+}
+else
+{
+    @foreach (var trigger in Model.Triggers)
+    {
+        <form method="post" asp-page-handler="SaveTrigger" class="row g-2 border-bottom py-2">
+            <input type="hidden" name="id" value="@trigger.Id" />
+            <div class="col-md-2"><input class="form-control" name="name" value="@trigger.Name" maxlength="200" required /></div>
+            <div class="col-md-2">
+                <select class="form-select" name="sourceDeviceId">
+                @foreach (var device in Model.Devices.Where(device =>
+                    device.DeviceType is "hue.switch" or "hue.motion-sensor"))
+                {
+                    @if (device.Id == trigger.SourceDeviceId) { <option value="@device.Id" selected>@device.Name</option> } else { <option value="@device.Id">@device.Name</option> }
+                }
+                </select>
+            </div>
+            <div class="col-md-3"><input class="form-control" name="stateCriteriaJson" value="@trigger.StateCriteriaJson" maxlength="4096" required /></div>
+            <div class="col-md-2"><input class="form-control" name="actionSetIds" value="@string.Join(',', trigger.ActionSetIds)" required /></div>
+            <div class="col-md-1"><input class="form-control" name="cooldownSeconds" value="@trigger.CooldownSeconds" type="number" min="0" max="86400" /></div>
+            <div class="col-md-1">
+                @if (trigger.Enabled) { <input name="enabled" type="checkbox" value="true" checked aria-label="Enabled" /> }
+                else { <input name="enabled" type="checkbox" value="true" aria-label="Enabled" /> }
+                <input type="hidden" name="enabled" value="false" />
+            </div>
+            <div class="col-md-1">
+                <button class="btn btn-sm btn-secondary" type="submit">Save</button>
+                <button class="btn btn-sm btn-outline-danger" type="submit" formaction="?handler=DeleteTrigger" formmethod="post" name="id" value="@trigger.Id">Delete</button>
+            </div>
+        </form>
+    }
+}
+
+<h2>Validation preview and effective targets</h2>
+@if (Model.Preview.Triggers.Count == 0)
+{
+    <p>Create a trigger to see its effective targets.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Trigger/source</th><th>State fields</th><th>References</th><th>Effective targets</th><th>Validation</th></tr></thead>
+        <tbody>
+        @foreach (var trigger in Model.Preview.Triggers)
+        {
+            <tr>
+                <td>@trigger.Name<br /><small>@trigger.Source</small></td>
+                <td>@string.Join(", ", trigger.StateFields)</td>
+                <td>@string.Join("; ", trigger.References)</td>
+                <td>
+                    @foreach (var target in trigger.EffectiveTargets)
+                    {
+                        <div>@target.Name: @target.Target - @target.StateChange (@(target.Enabled ? "enabled" : "disabled"))</div>
+                    }
+                </td>
+                <td>@(trigger.Error ?? "Valid")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<h2>Recent automation audit</h2>
+@if (Model.RecentAudit.Count == 0)
+{
+    <p>No automation events have been processed.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Time (UTC)</th><th>Source</th><th>Trigger</th><th>Action</th><th>Outcome</th></tr></thead>
+        <tbody>
+        @foreach (var entry in Model.RecentAudit)
+        {
+            <tr>
+                <td>@entry.OccurredUtc.UtcDateTime.ToString("u")</td>
+                <td>@entry.SourceDeviceId</td>
+                <td>@entry.TriggerId</td>
+                <td>@entry.ActionId</td>
+                <td>@entry.Outcome@(entry.Status is null ? string.Empty : $": {entry.Status}")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

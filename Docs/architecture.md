@@ -102,13 +102,15 @@ It opens a bounded request/response MQTT connection only when an administrator
 checks devices, reads sensors, or sets a fan speed; it does not create a
 long-lived cloud listener.
 
-An administrator starts a PKCE authorization flow from the Philips Air+ page
-and supplies the returned redirect address or authorization code to complete
-the link. The authorization verifier/state is random, tied to the
-administrator, single-use, and expires after ten minutes. Access and refresh
-tokens are stored only through `ISecretStore` (Windows DPAPI by default), never
-in `state.json`, logs, or the UI. The persisted device mapping contains the
-Air+ API device ID, not the cloud MQTT thing name.
+An administrator starts email verification from the Philips Air+ page and
+enters the code Philips sends to the account email address. The server holds
+the email and opaque Gigya verification token in an administrator-bound,
+single-use in-memory request that expires after ten minutes. Failed code
+attempts may be retried until expiry; successful registration consumes the
+request. Access and refresh tokens are stored only through `ISecretStore`
+(Windows DPAPI by default), never in `state.json`, logs, or the UI. The
+persisted device mapping contains the Air+ API device ID, not the cloud MQTT
+thing name.
 
 Sensor attributes are populated only where the shadow reports them, including
 PM2.5, allergen/air-quality/gas indicators, temperature, humidity, filter

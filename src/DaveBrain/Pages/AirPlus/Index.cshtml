@@ -12,41 +12,44 @@
 }
 @if (Model.Result is not null)
 {
-    <p><strong>@Model.Result.Status</strong>@(Model.Result.Detail is null ? string.Empty : $": {Model.Result.Detail}")</p>
-}
-
-@if (!Model.IsConfigured)
-{
-    <p class="alert alert-warning">
-        Philips Air+ is not configured. Set <code>PhilipsAirPlus:ClientId</code>,
-        <code>PhilipsAirPlus:ClientSecret</code>, and <code>PhilipsAirPlus:RedirectUri</code>
-        in server configuration. Credentials are never entered or stored through this page.
+    <p>
+        <strong>@Model.Result.Status</strong>@(Model.Result.Detail is null ? string.Empty : $": {Model.Result.Detail}")
+        @if (Model.Result.State is not null)
+        {
+            <br />
+            <strong>Sensor readings:</strong> @Model.FormatState(Model.Result.State)
+        }
     </p>
 }
-else if (Model.Hubs.Count == 0)
+
+@if (Model.Hubs.Count == 0)
 {
     <h2>Link Philips Air+ account</h2>
-    <p>Philips Air+ uses the Philips/Versuni cloud service. Start sign-in, then paste the complete redirect address or authorization code after you approve access.</p>
-    <form method="post" asp-page-handler="BeginAuthorization">
+    <p>Enter the email address for the Philips Air+ account. Philips will send a verification code that you will enter here to complete registration.</p>
+    <form method="post" asp-page-handler="RequestEmailVerification">
         <div class="mb-3">
             <label for="hub-name" class="form-label">Account name</label>
             <input id="hub-name" name="hubName" value="Philips Air+" maxlength="200" class="form-control" required />
         </div>
-        <button type="submit" class="btn btn-primary">Start Philips sign-in</button>
+        <div class="mb-3">
+            <label for="account-email" class="form-label">Philips Air+ account email</label>
+            <input id="account-email" name="email" type="email" maxlength="320" class="form-control" autocomplete="email" required />
+        </div>
+        <button type="submit" class="btn btn-primary">Send verification code</button>
     </form>
 }
 
-@if (Model.AuthorizationUri is not null && Model.AuthorizationState is not null)
+@if (Model.VerificationId is not null)
 {
-    <section class="mt-4" aria-labelledby="complete-sign-in-heading">
-        <h2 id="complete-sign-in-heading">Complete Philips sign-in</h2>
-        <p><a href="@Model.AuthorizationUri" target="_blank" rel="noopener noreferrer">Open Philips sign-in</a>, approve access, then paste the complete redirect address or authorization code below.</p>
-        <form method="post" asp-page-handler="CompleteAuthorization">
-            <input type="hidden" name="state" value="@Model.AuthorizationState" />
+    <section class="mt-4" aria-labelledby="complete-verification-heading">
+        <h2 id="complete-verification-heading">Complete email verification</h2>
+        <p>Enter the verification code sent to the Philips Air+ account email address.</p>
+        <form method="post" asp-page-handler="CompleteEmailVerification">
+            <input type="hidden" name="verificationId" value="@Model.VerificationId" />
             <input type="hidden" name="hubName" value="@Model.PendingHubName" />
             <div class="mb-3">
-                <label for="redirect-url" class="form-label">Redirect address or authorization code</label>
-                <input id="redirect-url" name="redirectUrlOrCode" class="form-control" maxlength="4096" required />
+                <label for="verification-code" class="form-label">Verification code</label>
+                <input id="verification-code" name="code" class="form-control" maxlength="32" autocomplete="one-time-code" required />
             </div>
             <button type="submit" class="btn btn-primary">Link account</button>
         </form>
@@ -103,34 +106,41 @@ else if (Model.Hubs.Count == 0)
         }
         else
         {
+            var selectionIndex = 0;
+            <form method="post" asp-page-handler="ImportSelected">
+                <input type="hidden" name="hubId" value="@Model.CandidateHubId" />
+                <partial name="_BulkImportToolbar" model='new BulkImportToolbarModel("airplus-device-selection")' />
             <table class="table">
-                <thead><tr><th>Name</th><th>Model</th><th>Current readings</th><th>Import</th></tr></thead>
+                <thead><tr><th>Select</th><th>Name</th><th>Model</th><th>Current readings</th><th>Import</th></tr></thead>
                 <tbody>
                 @foreach (var device in Model.Candidates)
                 {
                     <tr>
+                        <td>
+                            <input type="checkbox" name="selections[@selectionIndex].Selected" value="true" class="airplus-device-selection" aria-label="Select @device.Name" />
+                            <input type="hidden" name="selections[@selectionIndex].Selected" value="false" />
+                        </td>
                         <td>@device.Name</td>
                         <td>@(device.ProductType ?? "Unknown")</td>
                         <td>@Model.FormatState(device.State)</td>
                         <td>
-                            <form method="post" asp-page-handler="Import">
-                                <input type="hidden" name="hubId" value="@Model.CandidateHubId" />
-                                <input type="hidden" name="deviceId" value="@device.DeviceId" />
-                                <input type="text" name="displayName" value="@device.Name" maxlength="200" aria-label="Display name for @device.Name" required />
-                                <select name="locationId" aria-label="Location for @device.Name">
-                                    <option value="">No location</option>
-                                    @foreach (var location in Model.Locations)
-                                    {
-                                        <option value="@location.Id">@location.Name</option>
-                                    }
-                                </select>
-                                <button type="submit" class="btn btn-sm btn-primary">Import</button>
-                            </form>
+                            <input type="hidden" name="selections[@selectionIndex].DeviceId" value="@device.DeviceId" />
+                            <input type="text" name="selections[@selectionIndex].DisplayName" value="@device.Name" maxlength="200" aria-label="Display name for @device.Name" required />
+                            <select name="selections[@selectionIndex].LocationId" aria-label="Location for @device.Name">
+                                <option value="">No location</option>
+                                @foreach (var location in Model.Locations)
+                                {
+                                    <option value="@location.Id">@location.Name</option>
+                                }
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-primary" formaction="?handler=ImportSingle" name="selectionIndex" value="@selectionIndex">Import</button>
                         </td>
                     </tr>
+                    selectionIndex++;
                 }
                 </tbody>
             </table>
+            </form>
         }
     </section>
 }

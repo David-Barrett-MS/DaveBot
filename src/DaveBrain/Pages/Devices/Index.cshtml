@@ -1,10 +1,10 @@
 @page
 @model DaveBrain.Pages.Devices.IndexModel
 @{
-    ViewData["Title"] = "Hue devices";
+    ViewData["Title"] = "Devices";
 }
 
-<h1>Hue devices</h1>
+<h1>Devices</h1>
 <div asp-validation-summary="ModelOnly" class="text-danger"></div>
 @if (Model.Result is not null)
 {
@@ -13,17 +13,101 @@
 
 @if (Model.Devices.Count == 0)
 {
-    <p>No Hue devices are mapped.</p>
+    <p>No devices are mapped.</p>
 }
 else
 {
-    <table class="table">
-        <thead><tr><th>Name</th><th>Location</th><th>Cached state</th><th>Diagnostic action</th></tr></thead>
+    <table class="table align-middle">
+        <thead>
+            <tr>
+                <th scope="col">Enabled</th>
+                <th scope="col">Name</th>
+                <th scope="col">
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                                data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            Type
+                        </button>
+                        <div class="dropdown-menu p-2 location-filter-menu">
+                            <label class="dropdown-item-text d-block mb-2">
+                                <input class="form-check-input me-1 filter-select-all" type="checkbox"
+                                       data-filter-group="type" checked="@Model.AreAllDeviceTypesSelected()" />
+                                <span data-filter-select-label="type">
+                                    @(Model.AreAllDeviceTypesSelected() ? "Deselect all" : "Select all")
+                                </span>
+                            </label>
+                            @foreach (var type in Model.DeviceTypes)
+                            {
+                                <label class="dropdown-item-text d-block">
+                                    <input class="form-check-input me-1 device-filter-checkbox" type="checkbox"
+                                           data-filter-group="type" data-filter-value="@type"
+                                           checked="@Model.IsTypeFilterSelected(type)" />
+                                    @type
+                                </label>
+                            }
+                        </div>
+                    </div>
+                </th>
+                <th scope="col">
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                                data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            Location
+                        </button>
+                        <div class="dropdown-menu p-2 location-filter-menu">
+                            <label class="dropdown-item-text d-block mb-2">
+                                <input class="form-check-input me-1 filter-select-all" type="checkbox"
+                                       data-filter-group="location" checked="@Model.AreAllLocationsSelected()" />
+                                <span data-filter-select-label="location">
+                                    @(Model.AreAllLocationsSelected() ? "Deselect all" : "Select all")
+                                </span>
+                            </label>
+                            <label class="dropdown-item-text d-block">
+                                <input class="form-check-input me-1 device-filter-checkbox" type="checkbox"
+                                       data-filter-group="location" data-filter-value="unassigned"
+                                       checked="@Model.IsLocationFilterSelected("unassigned")" />
+                                No location
+                            </label>
+                            @foreach (var location in Model.Locations)
+                            {
+                                <label class="dropdown-item-text d-block">
+                                    <input class="form-check-input me-1 device-filter-checkbox" type="checkbox"
+                                           data-filter-group="location" data-filter-value="@location.Id"
+                                           checked="@Model.IsLocationFilterSelected(location.Id.ToString())" />
+                                    @location.Name
+                                </label>
+                            }
+                        </div>
+                    </div>
+                </th>
+                <th scope="col">Cached state</th>
+                <th scope="col">Action</th>
+            </tr>
+        </thead>
         <tbody>
         @foreach (var device in Model.Devices)
         {
-            <tr>
-                <td>@device.Name (@device.DeviceType; @(device.Enabled ? "Enabled" : "Disabled"))</td>
+            var locationFilter = device.LocationId?.ToString() ?? "unassigned";
+            var isHueLight = device.DeviceType == "hue.light";
+            <tr class="device-row" data-location-filter="@locationFilter" data-type-filter="@device.DeviceType">
+                <td>
+                    <form method="post" asp-page-handler="SetEnabled">
+                        <input type="hidden" name="deviceId" value="@device.Id" />
+                        @if (device.Enabled)
+                        {
+                            <input class="form-check-input" type="checkbox" name="enabled" value="true" checked
+                                   aria-label="Enable @device.Name" onchange="this.form.requestSubmit()" />
+                        }
+                        else
+                        {
+                            <input class="form-check-input" type="checkbox" name="enabled" value="true"
+                                   aria-label="Enable @device.Name" onchange="this.form.requestSubmit()" />
+                        }
+                        <input type="hidden" name="enabled" value="false" />
+                    </form>
+                </td>
+                <td>@device.Name</td>
+                <td><code>@device.DeviceType</code></td>
                 <td>
                     <form method="post" asp-page-handler="UpdateLocation">
                         <input type="hidden" name="deviceId" value="@device.Id" />
@@ -50,31 +134,297 @@ else
                         </select>
                     </form>
                 </td>
-                <td>@Model.FormatState(device.State)</td>
                 <td>
-                    <form method="post">
-                        <input type="hidden" name="deviceId" value="@device.Id" />
-                        <select name="action" aria-label="Action">
-                            @if (device.DeviceType == "hue.light")
-                            {
-                            <option value="read">Read</option>
-                            <option value="on">Turn on</option>
-                            <option value="off">Turn off</option>
-                            <option value="brightness">Set brightness</option>
-                            }
-                            <option value="disable">Disable mapping</option>
-                            <option value="enable">Enable mapping</option>
-                            <option value="remove">Remove mapping</option>
-                        </select>
-                        @if (device.DeviceType == "hue.light")
+                    @Model.FormatState(device)
+                    @if (Model.GetCachedColourHex(device) is { } colourHex)
+                    {
+                        <span class="colour-swatch ms-1" style="background-color: @colourHex"
+                              title="Cached colour @colourHex" role="img"
+                              aria-label="Cached colour @colourHex"></span>
+                    }
+                </td>
+                <td>
+                    <div class="d-flex flex-wrap gap-1">
+                        @if (isHueLight && device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.OnOff))
                         {
-                            <input type="number" name="brightness" min="0" max="100" aria-label="Brightness" />
+                            <form method="post">
+                                <input type="hidden" name="deviceId" value="@device.Id" />
+                                <input type="hidden" name="action" value="on" />
+                                <button type="submit" class="btn btn-sm btn-success" title="Turn on"
+                                        aria-label="Turn on @device.Name" disabled="@(!device.Enabled)">
+                                    <span aria-hidden="true">&#x25B6;</span> On
+                                </button>
+                            </form>
+                            <form method="post">
+                                <input type="hidden" name="deviceId" value="@device.Id" />
+                                <input type="hidden" name="action" value="off" />
+                                <button type="submit" class="btn btn-sm btn-secondary" title="Turn off"
+                                        aria-label="Turn off @device.Name" disabled="@(!device.Enabled)">
+                                    <span aria-hidden="true">&#x25A0;</span> Off
+                                </button>
+                            </form>
                         }
-                        <button type="submit" class="btn btn-sm btn-primary">Run</button>
-                    </form>
+                        @if (isHueLight &&
+                            (device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.Colour) ||
+                             device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.Brightness)))
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-primary" title="Set colour or brightness"
+                                    aria-label="Set colour or brightness for @device.Name" data-bs-toggle="modal"
+                                    data-bs-target="#colour-modal-@device.Id" disabled="@(!device.Enabled)">
+                                <span aria-hidden="true">&#x25C9;</span> Colour
+                            </button>
+                        }
+                        @if (Model.CanRead(device))
+                        {
+                            <form method="post">
+                                <input type="hidden" name="deviceId" value="@device.Id" />
+                                <input type="hidden" name="action" value="read" />
+                                <button type="submit" class="btn btn-sm btn-outline-secondary" title="Read current state"
+                                        aria-label="Read current state for @device.Name" disabled="@(!device.Enabled)">
+                                    <span aria-hidden="true">&#x21BB;</span> Read
+                                </button>
+                            </form>
+                        }
+                        <button type="button" class="btn btn-sm btn-outline-secondary" title="Other actions"
+                                aria-label="Other actions for @device.Name" data-bs-toggle="modal"
+                                data-bs-target="#other-modal-@device.Id">
+                            <span aria-hidden="true">&#x22EF;</span> Other
+                        </button>
+                    </div>
                 </td>
             </tr>
         }
         </tbody>
     </table>
+
+    @foreach (var device in Model.Devices)
+    {
+        var picker = Model.GetColourPickerValue(device.State);
+        var isHueLight = device.DeviceType == "hue.light";
+        <div class="modal fade" id="other-modal-@device.Id" tabindex="-1" aria-labelledby="other-modal-label-@device.Id" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 class="modal-title fs-5" id="other-modal-label-@device.Id">Other actions: @device.Name</h2>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        @if (device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.FanSpeed))
+                        {
+                            var fanSpeed = Model.GetFanSpeed(device.State);
+                            <form method="post" class="mb-3">
+                                <input type="hidden" name="deviceId" value="@device.Id" />
+                                <input type="hidden" name="action" value="set-fan-speed" />
+                                <label class="form-label" for="fan-speed-@device.Id">Fan speed</label>
+                                <div class="input-group">
+                                    <select id="fan-speed-@device.Id" class="form-select" name="fanSpeed">
+                                        @for (var speed = 1; speed <= 10; speed++)
+                                        {
+                                            @if (fanSpeed == speed) { <option value="@speed" selected>@speed</option> } else { <option value="@speed">@speed</option> }
+                                        }
+                                        @if (fanSpeed == 81) { <option value="81" selected>11</option> } else { <option value="81">11</option> }
+                                        @if (fanSpeed == 82) { <option value="82" selected>12</option> } else { <option value="82">12</option> }
+                                    </select>
+                                    <button type="submit" class="btn btn-primary" disabled="@(!device.Enabled)">Set</button>
+                                </div>
+                            </form>
+                        }
+                        <form method="post">
+                            <input type="hidden" name="deviceId" value="@device.Id" />
+                            <input type="hidden" name="action" value="remove" />
+                            <button type="submit" class="btn btn-outline-danger">Remove mapping</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        @if (isHueLight &&
+            (device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.Colour) ||
+             device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.Brightness)))
+        {
+            <div class="modal fade" id="colour-modal-@device.Id" tabindex="-1" aria-labelledby="colour-modal-label-@device.Id" aria-hidden="true">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <form method="post">
+                            <div class="modal-header">
+                                <h2 class="modal-title fs-5" id="colour-modal-label-@device.Id">Colour / brightness: @device.Name</h2>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <input type="hidden" name="deviceId" value="@device.Id" />
+                                <input type="hidden" name="action" value="set-colour-brightness" />
+                                <p class="text-muted">Select one or both values to update.</p>
+                                @if (device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.Colour))
+                                {
+                                    <div class="form-check mb-2">
+                                        <input id="update-colour-@device.Id" class="form-check-input colour-update-toggle"
+                                               type="checkbox" name="updateColour" value="true"
+                                               data-control-target="colour-control-@device.Id" />
+                                        <input type="hidden" name="updateColour" value="false" />
+                                        <label class="form-check-label" for="update-colour-@device.Id">Update colour</label>
+                                    </div>
+                                    <fieldset id="colour-control-@device.Id" disabled>
+                                        <input id="colour-x-@device.Id" type="hidden" name="colourX" value="@picker.X" />
+                                        <input id="colour-y-@device.Id" type="hidden" name="colourY" value="@picker.Y" />
+                                        <label class="form-label" for="colour-picker-@device.Id">Colour</label>
+                                        <input id="colour-picker-@device.Id" class="form-control form-control-color rgb-colour-picker"
+                                               type="color" value="@picker.Hex" data-colour-x-target="colour-x-@device.Id"
+                                               data-colour-y-target="colour-y-@device.Id" />
+                                    </fieldset>
+                                }
+                                @if (device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.Brightness))
+                                {
+                                    <div class="form-check mt-3 mb-2">
+                                        <input id="update-brightness-@device.Id" class="form-check-input colour-update-toggle"
+                                               type="checkbox" name="updateBrightness" value="true"
+                                               data-control-target="brightness-control-@device.Id" />
+                                        <input type="hidden" name="updateBrightness" value="false" />
+                                        <label class="form-check-label" for="update-brightness-@device.Id">Update brightness</label>
+                                    </div>
+                                    <fieldset id="brightness-control-@device.Id" disabled>
+                                        <label class="form-label" for="colour-brightness-@device.Id">Brightness: <output id="colour-brightness-output-@device.Id">@picker.Brightness</output>%</label>
+                                        <input id="colour-brightness-@device.Id" class="form-range brightness-picker" type="range"
+                                               name="brightness" min="0" max="100" value="@picker.Brightness"
+                                               data-brightness-output-target="colour-brightness-output-@device.Id" />
+                                    </fieldset>
+                                }
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                <button type="submit" class="btn btn-primary">Apply</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        }
+    }
+}
+
+@section Scripts {
+    <script>
+        (() => {
+            const filterCheckboxes = group =>
+                Array.from(document.querySelectorAll(
+                    `.device-filter-checkbox[data-filter-group="${group}"]`));
+
+            const selectedFilterValues = group =>
+                filterCheckboxes(group)
+                    .filter(filter => filter.checked)
+                    .map(filter => filter.dataset.filterValue);
+
+            const updateDeviceFilters = () => {
+                const selectedLocations = new Set(selectedFilterValues("location"));
+                const selectedTypes = new Set(selectedFilterValues("type"));
+                document.querySelectorAll(".device-row").forEach(row => {
+                    row.hidden = !selectedLocations.has(row.dataset.locationFilter) ||
+                        !selectedTypes.has(row.dataset.typeFilter);
+                });
+            };
+
+            const syncFiltersToUrl = () => {
+                const url = new URL(window.location.href);
+                for (const [group, parameter] of [["location", "locationFilter"], ["type", "typeFilter"]]) {
+                    const filters = filterCheckboxes(group);
+                    const selected = selectedFilterValues(group);
+                    if (selected.length === filters.length) {
+                        url.searchParams.delete(parameter);
+                    } else {
+                        url.searchParams.set(parameter, selected.join(","));
+                    }
+                }
+                window.history.replaceState(null, "", url);
+            };
+
+            const updateSelectAllCheckboxes = () => {
+                document.querySelectorAll(".filter-select-all").forEach(selectAll => {
+                    const group = selectAll.dataset.filterGroup;
+                    const filters = filterCheckboxes(group);
+                    const allSelected = filters.length > 0 && filters.every(filter => filter.checked);
+                    selectAll.checked = allSelected;
+                    document.querySelector(`[data-filter-select-label="${group}"]`).textContent =
+                        allSelected ? "Deselect all" : "Select all";
+                });
+            };
+
+            const appendFilterToForm = (form, group, parameter) => {
+                const filters = filterCheckboxes(group);
+                const selected = selectedFilterValues(group);
+                if (selected.length === filters.length) {
+                    return;
+                }
+
+                const filter = document.createElement("input");
+                filter.type = "hidden";
+                filter.name = parameter;
+                filter.value = selected.join(",");
+                form.append(filter);
+            };
+
+            const rgbToXy = colour => {
+                const red = parseInt(colour.slice(1, 3), 16) / 255;
+                const green = parseInt(colour.slice(3, 5), 16) / 255;
+                const blue = parseInt(colour.slice(5, 7), 16) / 255;
+                const linear = component => component <= 0.04045
+                    ? component / 12.92
+                    : Math.pow((component + 0.055) / 1.055, 2.4);
+                const r = linear(red);
+                const g = linear(green);
+                const b = linear(blue);
+                const x = r * 0.4124 + g * 0.3576 + b * 0.1805;
+                const y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+                const z = r * 0.0193 + g * 0.1192 + b * 0.9505;
+                const total = x + y + z;
+                return total > 0 ? [x / total, y / total] : [0.3127, 0.3290];
+            };
+
+            document.addEventListener("change", event => {
+                if (event.target.matches(".device-filter-checkbox")) {
+                    updateDeviceFilters();
+                    updateSelectAllCheckboxes();
+                    syncFiltersToUrl();
+                }
+
+                if (event.target.matches(".filter-select-all")) {
+                    const selected = event.target.checked;
+                    filterCheckboxes(event.target.dataset.filterGroup).forEach(filter => {
+                        filter.checked = selected;
+                    });
+                    updateDeviceFilters();
+                    updateSelectAllCheckboxes();
+                    syncFiltersToUrl();
+                }
+
+                if (event.target.matches(".colour-update-toggle")) {
+                    document.getElementById(event.target.dataset.controlTarget).disabled = !event.target.checked;
+                }
+            });
+
+            document.addEventListener("submit", event => {
+                if (!event.target.matches("form")) {
+                    return;
+                }
+
+                appendFilterToForm(event.target, "location", "locationFilter");
+                appendFilterToForm(event.target, "type", "typeFilter");
+            });
+
+            document.addEventListener("input", event => {
+                if (event.target.matches(".rgb-colour-picker")) {
+                    const [x, y] = rgbToXy(event.target.value);
+                    document.getElementById(event.target.dataset.colourXTarget).value = x.toFixed(6);
+                    document.getElementById(event.target.dataset.colourYTarget).value = y.toFixed(6);
+                }
+
+                if (event.target.matches(".brightness-picker")) {
+                    document.getElementById(event.target.dataset.brightnessOutputTarget).value = event.target.value;
+                }
+            });
+
+            updateDeviceFilters();
+            updateSelectAllCheckboxes();
+            syncFiltersToUrl();
+        })();
+    </script>
 }

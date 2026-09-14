@@ -137,29 +137,18 @@ safe TLS/network error detail.
 
 Philips Air+ is a cloud integration; it is not discovered on the LAN. Enable
 it only when the DaveBrain host is permitted to make outbound certificate-
-validated HTTPS and WSS connections to Philips/Versuni on TCP 443. It needs a
-Philips Air+ OAuth client registration and an allowed redirect URI. Configure
-these values in the server's protected configuration, not source control:
+validated HTTPS and WSS connections to Philips/Versuni on TCP 443. The
+application uses the same public client identity and registered
+`com.philips.air://loginredirect` redirect URI as the referenced Air+ email
+integration; the administrator does not configure protocol credentials.
 
-```json
-"PhilipsAirPlus": {
-  "ClientId": "<registered-client-id>",
-  "ClientSecret": "<registered-client-secret>",
-  "RedirectUri": "https://<registered-callback>"
-}
-```
-
-`RedirectUri` may instead be the registered `com.philips.air` custom redirect
-URI. Do not copy third-party client credentials into DaveBrain configuration;
-use credentials issued for this deployment. The app deliberately does not
-accept credentials through a browser form.
-
-After restarting DaveBrain, an Admin opens **Philips Air+**, starts the PKCE
-sign-in flow, approves access with the Air+ account, and pastes the complete
-redirect address or authorization code into the completion form. The access
-and refresh tokens are kept in the DPAPI-protected secret store. The import
-screen lists devices even when a particular device has no current shadow
-readings; import it, then use **Read sensors** after it is online. The
+After restarting DaveBrain, an Admin opens **Philips Air+**, enters the account
+email address, requests a verification code, and enters that code in the same
+Admin UI. The short-lived email verification data remains only in server
+memory; the completed access and refresh registration is stored as the hub's
+DPAPI-protected secret, exactly like the Hue application-key registration.
+The import screen lists devices even when a particular device has no current
+shadow readings; import it, then use **Read sensors** after it is online. The
 application only permits fan-speed values 1-10, 81, and 82, and does not allow
 arbitrary cloud device-state writes.
 

@@ -1,0 +1,46 @@
+@page
+@model DaveBrain.Pages.System.DebugModel
+@{
+    ViewData["Title"] = "Debug";
+}
+
+<h1>Debug</h1>
+<p>Entries are retained only for this browser session and credentials are redacted.</p>
+<style>
+    .debug-log {
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    .debug-log pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+</style>
+<form method="post" asp-page-handler="Clear" class="mb-3">
+    <button class="btn btn-outline-danger" type="submit">Clear session log</button>
+</form>
+@if (Model.Entries.Count == 0)
+{
+    <p>No actions have been recorded in this browser session.</p>
+}
+else
+{
+    <div class="table-responsive">
+    <table class="table debug-log">
+        <thead><tr><th>Time (UTC)</th><th>Category</th><th>Request</th><th>Response</th></tr></thead>
+        <tbody>
+        @foreach (var entry in Model.Entries)
+        {
+            <tr>
+                <td>@entry.OccurredUtc.UtcDateTime.ToString("u")</td>
+                <td>@entry.Category</td>
+                <td><pre class="mb-0">@entry.Request</pre></td>
+                <td><pre class="mb-0">@entry.Response</pre></td>
+            </tr>
+        }
+        </tbody>
+    </table>
+    </div>
+}
