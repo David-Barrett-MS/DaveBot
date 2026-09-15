@@ -45,3 +45,4 @@ bld/
 /src/DaveBrain/*.pdb
 /src/DaveBrain/*.exe
 /src/DaveBrain/web.config
+/src/DaveBrain/Properties/PublishProfiles/CrankyServer.pubxml.user
