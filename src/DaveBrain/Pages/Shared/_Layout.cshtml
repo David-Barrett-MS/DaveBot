@@ -44,8 +44,10 @@
                         <a class="sidebar-link @(ActiveNavigationClass("/Locations/Index"))" asp-page="/Locations/Index">Locations</a>
                         @if (User.IsInRole("Admin"))
                         {
+                            <a class="sidebar-link @(ActiveNavigationClass("/Groups/Index"))" asp-page="/Groups/Index">Groups</a>
                             <a class="sidebar-link @(ActiveNavigationClass("/Hubs/Index"))" asp-page="/Hubs/Index">Hue Bridges</a>
                             <a class="sidebar-link @(ActiveNavigationClass("/AirPlus/Index"))" asp-page="/AirPlus/Index">Philips Air+</a>
+                            <a class="sidebar-link @(ActiveNavigationClass("/Blink/Index"))" asp-page="/Blink/Index">Blink Cameras</a>
                         }
                     </section>
                     @if (User.IsInRole("Admin"))

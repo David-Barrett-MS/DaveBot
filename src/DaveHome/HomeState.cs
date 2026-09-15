@@ -7,6 +7,8 @@ public sealed record StoreRevision(long Value)
 
 public sealed record Location(Guid Id, string Name, Guid? ParentLocationId);
 
+public sealed record DeviceGroup(Guid Id, string Name);
+
 [Flags]
 public enum DeviceCapabilities
 {
@@ -45,7 +47,8 @@ public sealed record Device(
     Guid? HubId = null,
     string? ExternalResourceId = null,
     DeviceCapabilities Capabilities = DeviceCapabilities.None,
-    DeviceState? State = null);
+    DeviceState? State = null,
+    IReadOnlyList<Guid>? GroupIds = null);
 
 public static class HueMotionSensorResourceReference
 {
@@ -128,6 +131,9 @@ public sealed record HomeStateDocument(
 
     public IReadOnlyList<CommandAlias> CommandAliases { get; init; } = Array.Empty<CommandAlias>();
 
+    // Optional to keep existing state.json documents compatible.
+    public IReadOnlyList<DeviceGroup> Groups { get; init; } = Array.Empty<DeviceGroup>();
+
     // Optional properties keep existing state.json documents compatible.
     public IReadOnlyList<AutomationAction> AutomationActions { get; init; } =
         Array.Empty<AutomationAction>();
@@ -151,6 +157,7 @@ public sealed class HomeState
     {
         Document = document;
         LocationsById = document.Locations.ToDictionary(location => location.Id);
+        GroupsById = document.Groups.ToDictionary(group => group.Id);
         DevicesById = document.Devices.ToDictionary(device => device.Id);
         HubsById = document.Hubs.ToDictionary(hub => hub.Id);
         CommandAliasesById = document.CommandAliases.ToDictionary(alias => alias.Id);
@@ -166,6 +173,8 @@ public sealed class HomeState
     public StoreRevision Revision => Document.Revision;
 
     public IReadOnlyDictionary<Guid, Location> LocationsById { get; }
+
+    public IReadOnlyDictionary<Guid, DeviceGroup> GroupsById { get; }
 
     public IReadOnlyDictionary<Guid, Device> DevicesById { get; }
 
@@ -211,6 +220,23 @@ public sealed class HomeState
         }
 
         var locations = document.Locations.ToDictionary(location => location.Id);
+        if (document.Groups is null || document.Groups.Count > 500)
+        {
+            throw new InvalidOperationException("Device groups exceed the supported limit.");
+        }
+
+        var groupIds = new HashSet<Guid>();
+        var groupNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in document.Groups)
+        {
+            var normalizedName = TextCommandNormalizer.Normalize(group.Name);
+            if (group.Id == Guid.Empty || string.IsNullOrWhiteSpace(normalizedName) ||
+                normalizedName.Length > 200 || !groupIds.Add(group.Id) || !groupNames.Add(normalizedName))
+            {
+                throw new InvalidOperationException("Device groups must have unique IDs and names.");
+            }
+        }
+
         var aliasIds = new HashSet<Guid>();
         var aliases = new HashSet<string>(StringComparer.Ordinal);
         foreach (var alias in document.CommandAliases)
@@ -266,10 +292,14 @@ public sealed class HomeState
         {
             if (device.Id == Guid.Empty || string.IsNullOrWhiteSpace(device.Name) ||
                 string.IsNullOrWhiteSpace(device.DeviceType) || !deviceIds.Add(device.Id) ||
-                (device.LocationId is { } locationId && !locations.ContainsKey(locationId)))
+                (device.LocationId is { } locationId && !locations.ContainsKey(locationId)) ||
+                (device.GroupIds is { Count: > 100 } ||
+                 device.GroupIds is { } deviceGroupIds &&
+                 (deviceGroupIds.Distinct().Count() != deviceGroupIds.Count ||
+                  deviceGroupIds.Any(groupId => !groupIds.Contains(groupId)))))
             {
                 throw new InvalidOperationException(
-                    "Devices must have unique IDs, names, types, and existing locations.");
+                    "Devices must have unique IDs, names, types, locations, and groups.");
             }
 
             if (device.DeviceType is "hue.light" or "hue.switch" or "hue.motion-sensor" &&
@@ -290,6 +320,17 @@ public sealed class HomeState
             {
                 throw new InvalidOperationException(
                     "Philips Air+ devices must map uniquely to a Philips Air+ hub API device ID.");
+            }
+
+            if (device.DeviceType == "blink.camera" &&
+                (device.HubId is not { } blinkHubId ||
+                 !HubsByProvider(document, blinkHubId, "blink") ||
+                 device.ExternalResourceId is not { } blinkCameraId ||
+                 !IsExternalResourceId(blinkCameraId) ||
+                 !externalResourceIds.Add((blinkHubId, blinkCameraId))))
+            {
+                throw new InvalidOperationException(
+                    "Blink cameras must map uniquely to an existing Blink account camera.");
             }
 
             if (device.State?.Brightness is < 0 or > 100)

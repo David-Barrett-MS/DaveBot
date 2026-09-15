@@ -8,11 +8,22 @@ public enum DeviceOperationStatus
     ResourceNotFound,
     InvalidState,
     TimedOut,
+    VerificationRequired,
 }
 
 public sealed record DeviceOperationResult(
     DeviceOperationStatus Status,
     DeviceState? State = null,
+    string? Detail = null)
+{
+    public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
+}
+
+public sealed record DeviceSnapshot(string ContentType, byte[] Content);
+
+public sealed record DeviceSnapshotResult(
+    DeviceOperationStatus Status,
+    DeviceSnapshot? Snapshot = null,
     string? Detail = null)
 {
     public bool Succeeded => Status == DeviceOperationStatus.Succeeded;
@@ -44,5 +55,14 @@ public interface IDeviceProvider
     Task<DeviceOperationResult> SetStateAsync(
         Device device,
         DeviceStateChange change,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IDeviceSnapshotProvider
+{
+    string DeviceType { get; }
+
+    Task<DeviceSnapshotResult> GetSnapshotAsync(
+        Device device,
         CancellationToken cancellationToken = default);
 }

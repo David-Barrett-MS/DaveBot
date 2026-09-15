@@ -50,7 +50,7 @@ public sealed class IndexModel(
 
         Result = await commandProcessor.ProcessAsync(
             Transcript,
-            new CommandSource("admin", SourceLocationId),
+            new CommandSource("admin", SourceLocationId, AllowsBrowserSnapshot: true),
             cancellationToken);
         Load();
         return Page();

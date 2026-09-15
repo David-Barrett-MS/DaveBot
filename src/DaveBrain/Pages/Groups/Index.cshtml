@@ -1,0 +1,60 @@
+@page
+@model DaveBrain.Pages.Groups.IndexModel
+@{
+    ViewData["Title"] = "Groups";
+}
+
+<h1>Groups</h1>
+<p>Groups can contain devices from any location. A device may belong to multiple groups.</p>
+
+@if (User.IsInRole("Admin"))
+{
+    <form method="post" class="mb-4">
+        <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+        <label asp-for="NewGroupName" class="form-label"></label>
+        <input asp-for="NewGroupName" class="form-control" />
+        <button type="submit" class="btn btn-primary mt-2">Add group</button>
+    </form>
+}
+
+@if (Model.Groups.Count == 0)
+{
+    <p>No groups are configured.</p>
+}
+else
+{
+    <table class="table">
+        <thead><tr><th>Name</th><th>Members</th><th>Actions</th></tr></thead>
+        <tbody>
+        @foreach (var group in Model.Groups)
+        {
+            <tr>
+                <td>
+                    @if (User.IsInRole("Admin"))
+                    {
+                        <form method="post" asp-page-handler="Rename" class="d-flex gap-2">
+                            <input type="hidden" name="id" value="@group.Id" />
+                            <input name="name" value="@group.Name" class="form-control" aria-label="Group name" />
+                            <button type="submit" class="btn btn-sm btn-secondary">Rename</button>
+                        </form>
+                    }
+                    else
+                    {
+                        @group.Name
+                    }
+                </td>
+                <td>@Model.MemberCount(group)</td>
+                <td>
+                    @if (User.IsInRole("Admin"))
+                    {
+                        <form method="post" asp-page-handler="Delete">
+                            <input type="hidden" name="id" value="@group.Id" />
+                            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                        </form>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

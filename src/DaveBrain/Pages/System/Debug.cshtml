@@ -18,9 +18,13 @@
         word-break: break-word;
     }
 </style>
-<form method="post" asp-page-handler="Clear" class="mb-3">
-    <button class="btn btn-outline-danger" type="submit">Clear session log</button>
-</form>
+<div class="d-flex gap-2 mb-3">
+    <button class="btn btn-outline-secondary" id="copy-debug-log" type="button">Copy to clipboard</button>
+    <form method="post" asp-page-handler="Clear">
+        <button class="btn btn-outline-danger" type="submit">Clear session log</button>
+    </form>
+</div>
+<p class="visually-hidden" id="copy-debug-log-status" aria-live="polite"></p>
 @if (Model.Entries.Count == 0)
 {
     <p>No actions have been recorded in this browser session.</p>
@@ -28,7 +32,7 @@
 else
 {
     <div class="table-responsive">
-    <table class="table debug-log">
+    <table class="table debug-log" id="debug-log">
         <thead><tr><th>Time (UTC)</th><th>Category</th><th>Request</th><th>Response</th></tr></thead>
         <tbody>
         @foreach (var entry in Model.Entries)
@@ -44,3 +48,22 @@ else
     </table>
     </div>
 }
+
+<script>
+    (() => {
+        const copyButton = document.getElementById("copy-debug-log");
+        const status = document.getElementById("copy-debug-log-status");
+
+        copyButton.addEventListener("click", async () => {
+            const log = document.getElementById("debug-log");
+            const text = log ? log.innerText : "No actions have been recorded in this browser session.";
+
+            try {
+                await navigator.clipboard.writeText(text);
+                status.textContent = "Debug log copied to clipboard.";
+            } catch {
+                status.textContent = "Unable to copy the debug log to the clipboard.";
+            }
+        });
+    })();
+</script>

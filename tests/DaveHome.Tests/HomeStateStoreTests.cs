@@ -55,6 +55,60 @@ public sealed class HomeStateStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdatePersistsDeviceGroupMemberships()
+    {
+        var store = new HomeStateStore(
+            new JsonSnapshotHomeStatePersistence(Path.Combine(_directory, "state.json")));
+        await store.InitializeAsync();
+        var livingRoom = new DeviceGroup(Guid.NewGuid(), "Living room lights");
+        var evening = new DeviceGroup(Guid.NewGuid(), "Evening");
+        var device = new Device(
+            Guid.NewGuid(), "Lamp", "test.device", null, GroupIds: [livingRoom.Id, evening.Id]);
+
+        await store.UpdateAsync(
+            state => state.Document with { Groups = [livingRoom, evening], Devices = [device] },
+            StoreRevision.Initial);
+
+        Assert.Equal(2, store.Current.GroupsById.Count);
+        Assert.Equal([livingRoom.Id, evening.Id], store.Current.DevicesById[device.Id].GroupIds);
+    }
+
+    [Fact]
+    public void StateRejectsUnknownOrDuplicateDeviceGroupMemberships()
+    {
+        var group = new DeviceGroup(Guid.NewGuid(), "Evening");
+        var unknownGroup = Guid.NewGuid();
+        var device = new Device(Guid.NewGuid(), "Lamp", "test.device", null, GroupIds: [unknownGroup]);
+        var document = HomeStateDocument.Empty with { Groups = [group], Devices = [device] };
+
+        Assert.Throws<InvalidOperationException>(() => HomeState.FromDocument(document));
+        Assert.Throws<InvalidOperationException>(() => HomeState.FromDocument(document with
+        {
+            Devices = [device with { GroupIds = [group.Id, group.Id] }],
+        }));
+    }
+
+    [Fact]
+    public void BlinkCamerasRequireAUniqueExistingBlinkHub()
+    {
+        var hub = new Hub(Guid.NewGuid(), "Blink", "blink", "https://rest-e002.immedia-semi.com/", "opaque", true);
+        var camera = new Device(Guid.NewGuid(), "Front", "blink.camera", null, HubId: hub.Id, ExternalResourceId: "12");
+        HomeState.FromDocument(HomeStateDocument.Empty with { Hubs = [hub], Devices = [camera] });
+
+        Assert.Throws<InvalidOperationException>(() => HomeState.FromDocument(
+            HomeStateDocument.Empty with
+            {
+                Devices = [camera],
+            }));
+        Assert.Throws<InvalidOperationException>(() => HomeState.FromDocument(
+            HomeStateDocument.Empty with
+            {
+                Hubs = [hub],
+                Devices = [camera, camera with { Id = Guid.NewGuid() }],
+            }));
+    }
+
+    [Fact]
     public void MotionSensorCompositeResourcesRequireAnExistingHubAndUniqueParts()
     {
         var hubId = Guid.NewGuid();

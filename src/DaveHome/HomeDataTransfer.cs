@@ -11,6 +11,9 @@ public sealed record HomeDataExportDocument(
     public IReadOnlyList<CommandAlias> CommandAliases { get; init; } = Array.Empty<CommandAlias>();
 
     // Optional to keep existing version-1 import documents compatible.
+    public IReadOnlyList<DeviceGroup> Groups { get; init; } = Array.Empty<DeviceGroup>();
+
+    // Optional to keep existing version-1 import documents compatible.
     public IReadOnlyList<AutomationAction> AutomationActions { get; init; } =
         Array.Empty<AutomationAction>();
 
@@ -21,7 +24,10 @@ public sealed record HomeDataExportDocument(
         Array.Empty<AutomationTrigger>();
 }
 
-public sealed record HomeDataImportResult(int ImportedLocations, int ImportedDevices);
+public sealed record HomeDataImportResult(
+    int ImportedLocations,
+    int ImportedDevices,
+    int ImportedGroups = 0);
 
 public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
 {
@@ -34,6 +40,7 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
             state.Devices.ToArray())
         {
             CommandAliases = state.CommandAliases.ToArray(),
+            Groups = state.Groups.ToArray(),
             AutomationActions = state.AutomationActions.ToArray(),
             AutomationActionSets = state.AutomationActionSets.ToArray(),
             AutomationTriggers = state.AutomationTriggers.ToArray(),
@@ -47,6 +54,7 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
         ArgumentNullException.ThrowIfNull(document);
         if (document.SchemaVersion != HomeDataExportDocument.CurrentSchemaVersion ||
             document.Locations is null || document.Devices is null || document.CommandAliases is null ||
+            document.Groups is null ||
             document.AutomationActions is null || document.AutomationActionSets is null ||
             document.AutomationTriggers is null)
         {
@@ -56,6 +64,7 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
         if (document.Locations.GroupBy(location => location.Id).Any(group => group.Count() > 1) ||
             document.Devices.GroupBy(device => device.Id).Any(group => group.Count() > 1) ||
             document.CommandAliases.GroupBy(alias => alias.Id).Any(group => group.Count() > 1) ||
+            document.Groups.GroupBy(group => group.Id).Any(group => group.Count() > 1) ||
             document.AutomationActions.GroupBy(action => action.Id).Any(group => group.Count() > 1) ||
             document.AutomationActionSets.GroupBy(actionSet => actionSet.Id)
                 .Any(group => group.Count() > 1) ||
@@ -72,6 +81,7 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
                 state.Document.CommandAliases,
                 document.CommandAliases,
                 alias => alias.Id),
+            Groups = MergeById(state.Document.Groups, document.Groups, group => group.Id),
             AutomationActions = MergeById(
                 state.Document.AutomationActions,
                 document.AutomationActions,
@@ -86,7 +96,10 @@ public sealed class HomeDataTransferService(IHomeStateStore homeStateStore)
                 trigger => trigger.Id),
         }, homeStateStore.Current.Revision, cancellationToken);
 
-        return new HomeDataImportResult(document.Locations.Count, document.Devices.Count);
+        return new HomeDataImportResult(
+            document.Locations.Count,
+            document.Devices.Count,
+            document.Groups.Count);
     }
 
     private static IReadOnlyList<T> MergeById<T>(

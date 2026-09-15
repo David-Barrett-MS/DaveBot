@@ -3,6 +3,7 @@ using DaveHome;
 using DaveIdentity;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
@@ -24,6 +25,7 @@ var issuer = new Uri(builder.Configuration["DaveIdentity:Issuer"] ?? "https://br
 var speechOptions = SpeechTranscriptionOptions.FromConfiguration(builder.Configuration);
 speechOptions.Validate();
 var philipsAirPlusOptions = new PhilipsAirPlusOptions();
+var blinkOptions = new BlinkOptions();
 var earMtlsPort = builder.Configuration.GetValue<int?>("DaveBot:EarMtlsPort") ?? 8443;
 if (earMtlsPort is < 1 or > 65_535 || earMtlsPort == issuer.Port)
 {
@@ -84,11 +86,21 @@ builder.Services.AddHttpClient<IPhilipsAirPlusClient, PhilipsAirPlusClient>(clie
 {
     client.Timeout = Timeout.InfiniteTimeSpan;
 }).AddHttpMessageHandler<AdminSessionDebugHttpMessageHandler>();
+builder.Services.AddSingleton(blinkOptions);
+builder.Services.AddSingleton<IBlinkRegistrationHttpClientFactory, BlinkRegistrationHttpClientFactory>();
+builder.Services.AddSingleton<IBlinkConnectionStore, InMemoryBlinkConnectionStore>();
+builder.Services.AddHttpClient<IBlinkClient, BlinkClient>(client =>
+{
+    client.Timeout = Timeout.InfiniteTimeSpan;
+}).AddHttpMessageHandler<AdminSessionDebugHttpMessageHandler>();
 builder.Services.AddSingleton<HueHubService>();
 builder.Services.AddSingleton<IDeviceProvider>(provider => provider.GetRequiredService<HueHubService>());
 builder.Services.AddSingleton<PhilipsAirPlusHubService>();
 builder.Services.AddSingleton<IDeviceProvider>(
     provider => provider.GetRequiredService<PhilipsAirPlusHubService>());
+builder.Services.AddSingleton<BlinkHubService>();
+builder.Services.AddSingleton<IDeviceProvider>(provider => provider.GetRequiredService<BlinkHubService>());
+builder.Services.AddSingleton<BlinkLiveViewManager>();
 builder.Services.AddSingleton<HueAutomationHealth>();
 builder.Services.AddSingleton<HueListenerDebugLog>();
 builder.Services.AddSingleton<HueSwitchStateSource>();
@@ -141,6 +153,15 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/v1/blink/live-view"))
+    {
+        SetSensitiveResponseHeaders(context.Response);
+    }
+
+    await next();
+});
 app.Use(async (context, next) =>
 {
     if (context.User.HasClaim("must_change_password", "true") &&
@@ -205,6 +226,84 @@ async Task<IResult> ReadyHealthAsync(
 
 app.MapGet("/health", ReadyHealthAsync).AllowAnonymous();
 app.MapGet("/health/ready", ReadyHealthAsync).AllowAnonymous();
+static void SetSensitiveResponseHeaders(HttpResponse response)
+{
+    response.Headers.CacheControl = "no-store, private";
+    response.Headers.Pragma = "no-cache";
+    response.Headers["Referrer-Policy"] = "no-referrer";
+    response.Headers["X-Content-Type-Options"] = "nosniff";
+}
+
+app.MapPost(
+    "/api/v1/blink/live-view",
+    async (
+        BlinkLiveViewOfferRequest request,
+        HttpContext httpContext,
+        IAntiforgery antiforgery,
+        BlinkLiveViewManager liveViews,
+        CancellationToken cancellationToken) =>
+    {
+        SetSensitiveResponseHeaders(httpContext.Response);
+        try
+        {
+            await antiforgery.ValidateRequestAsync(httpContext);
+        }
+        catch (AntiforgeryValidationException)
+        {
+            return Results.Json(
+                new { error = "invalid-request" },
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var userId = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var result = await liveViews.StartAsync(userId ?? string.Empty, request, cancellationToken);
+        return result.Succeeded
+            ? Results.Json(new
+            {
+                sessionId = result.SessionId,
+                type = "answer",
+                sdp = result.AnswerSdp,
+            })
+            : Results.Json(
+                new { error = result.ErrorCode ?? "live-view-unavailable" },
+                statusCode: StatusCodes.Status400BadRequest);
+    })
+    .RequireAuthorization(DaveIdentityPolicies.DiagnosticCommands);
+app.MapPost(
+    "/api/v1/blink/live-view/stop",
+    async (
+        BlinkLiveViewStopRequest request,
+        HttpContext httpContext,
+        IAntiforgery antiforgery,
+        BlinkLiveViewManager liveViews) =>
+    {
+        SetSensitiveResponseHeaders(httpContext.Response);
+        try
+        {
+            await antiforgery.ValidateRequestAsync(httpContext);
+        }
+        catch (AntiforgeryValidationException)
+        {
+            return Results.Json(
+                new { error = "invalid-request" },
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var stop = await liveViews.StopAsync(
+            httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty,
+            request.SessionId);
+        var reason = request.Reason is "modal-closed" or "page-unload" or "peer-failed" or
+            "replaced" or "start-failed"
+            ? request.Reason
+            : "unspecified";
+        RuntimeAuditContext.Write(
+            "Blink live view",
+            "Browser stop",
+            $"Reason: {reason}; peer state: {stop.PeerConnectionState ?? "unknown"}; " +
+            $"H.264 access units: {stop.H264AccessUnits}.");
+        return Results.NoContent();
+    })
+    .RequireAuthorization(DaveIdentityPolicies.DiagnosticCommands);
 app.MapPost(
     "/api/v1/ears/enrollments",
     async (

@@ -51,15 +51,24 @@ public sealed class AdminSessionDebugLog
 
     private static string Redact(string value)
     {
-        foreach (var name in new[] { "authorization", "token", "signature", "thingname", "password", "code", "email" })
+        foreach (var name in new[]
+                 {
+                     "authorization", "token", "signature", "thingname", "password", "code", "email",
+                     "serial",
+                 })
         {
             value = System.Text.RegularExpressions.Regex.Replace(
                 value,
-                $"(\"{name}\"\\s*:\\s*)\"[^\"]*\"",
+                $"(\"[^\"]*{name}[^\"]*\"\\s*:\\s*)\"[^\"]*\"",
                 "$1\"[redacted]\"",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
 
+        value = System.Text.RegularExpressions.Regex.Replace(
+            value,
+            """(^|[?&\r\n])([^=&\s]*(?:authorization|token|signature|thingname|password|code|email)[^=&\s]*)=[^&\s]*""",
+            "$1$2=[redacted]",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         return value.Length <= 65_536 ? value : value[..65_536] + "\n[truncated]";
     }
 

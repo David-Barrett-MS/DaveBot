@@ -9,7 +9,7 @@
 
 <section class="mb-4">
     <h2>Diagnostic command</h2>
-    <p>Examples: <code>lights on</code>, <code>turn kitchen lights off</code>, <code>set kitchen lights to 50%</code>, <code>set kitchen lights to blue</code>, and <code>are kitchen lights on</code>.</p>
+    <p>Examples: <code>lights on</code>, <code>turn kitchen lights off</code>, <code>turn evening lights on</code>, <code>set kitchen lights to 50%</code>, <code>set kitchen lights to blue</code>, <code>are kitchen lights on</code>, and <code>show snapshot from front door</code>. Group names target every enabled member.</p>
     <form method="post" asp-page-handler="Run">
         <label asp-for="Transcript" class="form-label">Command</label>
         <input asp-for="Transcript" class="form-control" maxlength="500" />
@@ -26,6 +26,13 @@
     @if (Model.Result is not null)
     {
         <p class="mt-2"><strong>@Model.Result.Outcome:</strong> @Model.Result.Message.Text <span class="text-muted">(@Model.Result.TargetSummary; @Model.Result.CorrelationId)</span></p>
+        @if (Model.Result.Snapshot is { } snapshot)
+        {
+            var imageDataUri = $"data:{snapshot.ContentType};base64,{Convert.ToBase64String(snapshot.Content)}";
+            <figure class="mt-3">
+                <img src="@imageDataUri" class="img-fluid" alt="Snapshot from @Model.Result.TargetSummary" />
+            </figure>
+        }
     }
 </section>
 

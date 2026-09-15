@@ -1,7 +1,9 @@
 @page
 @model DaveBrain.Pages.Devices.IndexModel
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
 @{
     ViewData["Title"] = "Devices";
+    var liveViewRequestToken = Antiforgery.GetAndStoreTokens(HttpContext).RequestToken;
 }
 
 <h1>Devices</h1>
@@ -80,6 +82,7 @@ else
                         </div>
                     </div>
                 </th>
+                <th scope="col">Groups</th>
                 <th scope="col">Cached state</th>
                 <th scope="col">Action</th>
             </tr>
@@ -89,6 +92,7 @@ else
         {
             var locationFilter = device.LocationId?.ToString() ?? "unassigned";
             var isHueLight = device.DeviceType == "hue.light";
+            var isBlinkCamera = device.DeviceType == "blink.camera";
             <tr class="device-row" data-location-filter="@locationFilter" data-type-filter="@device.DeviceType">
                 <td>
                     <form method="post" asp-page-handler="SetEnabled">
@@ -132,6 +136,37 @@ else
                                 }
                             }
                         </select>
+                    </form>
+                </td>
+                <td>
+                    <form method="post" asp-page-handler="UpdateGroups" class="group-membership-form"
+                              data-group-membership-changed="false">
+                            <input type="hidden" name="deviceId" value="@device.Id" />
+                            @if (Model.Groups.Count == 0)
+                            {
+                                <span class="text-muted">No groups</span>
+                            }
+                            else
+                            {
+                                <div class="dropdown">
+                                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                                            data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                                            aria-expanded="false" aria-label="Groups for @device.Name">
+                                        Groups (@(device.GroupIds?.Count ?? 0))
+                                    </button>
+                                    <div class="dropdown-menu p-2">
+                                    @foreach (var group in Model.Groups)
+                                    {
+                                        <label class="dropdown-item-text d-block">
+                                            <input class="form-check-input me-1 group-membership-checkbox"
+                                                   type="checkbox" name="groupIds" value="@group.Id"
+                                                   checked="@(device.GroupIds?.Contains(group.Id) == true)" />
+                                            @group.Name
+                                        </label>
+                                    }
+                                    </div>
+                                </div>
+                            }
                     </form>
                 </td>
                 <td>
@@ -185,6 +220,23 @@ else
                                 </button>
                             </form>
                         }
+                        @if (isBlinkCamera)
+                        {
+                            <form method="post">
+                                <input type="hidden" name="deviceId" value="@device.Id" />
+                                <input type="hidden" name="action" value="snapshot" />
+                                <button type="submit" class="btn btn-sm btn-outline-primary" title="Get a new snapshot"
+                                        aria-label="Get snapshot from @device.Name" disabled="@(!device.Enabled)">
+                                    <span aria-hidden="true">&#x1F4F7;</span> Get snapshot
+                                </button>
+                            </form>
+                            <button type="button" class="btn btn-sm btn-outline-danger blink-live-view-button"
+                                    title="Open live view" aria-label="Open live view from @device.Name"
+                                    data-device-id="@device.Id" data-device-name="@device.Name"
+                                    disabled="@(!device.Enabled)">
+                                <span aria-hidden="true">&#x25B6;</span> Live view
+                            </button>
+                        }
                         <button type="button" class="btn btn-sm btn-outline-secondary" title="Other actions"
                                 aria-label="Other actions for @device.Name" data-bs-toggle="modal"
                                 data-bs-target="#other-modal-@device.Id">
@@ -196,6 +248,43 @@ else
         }
         </tbody>
     </table>
+
+    @if (Model.Snapshot is { } snapshot)
+    {
+        var imageDataUri = $"data:{snapshot.ContentType};base64,{Convert.ToBase64String(snapshot.Content)}";
+        <div class="modal fade" id="snapshot-modal" tabindex="-1"
+             aria-labelledby="snapshot-modal-label" aria-hidden="true">
+            <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 class="modal-title fs-5" id="snapshot-modal-label">Snapshot: @Model.SnapshotDeviceName</h2>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body text-center">
+                        <img src="@imageDataUri" class="img-fluid" alt="Snapshot from @Model.SnapshotDeviceName" />
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    <div class="modal fade" id="live-view-modal" tabindex="-1"
+         aria-labelledby="live-view-modal-label" aria-hidden="true"
+         data-antiforgery-token="@liveViewRequestToken">
+        <div class="modal-dialog modal-xl modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title fs-5" id="live-view-modal-label">Live view</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-center">
+                    <video id="live-view-video" class="w-100 bg-dark" autoplay playsinline muted controls
+                           aria-describedby="live-view-status"></video>
+                    <p id="live-view-status" class="mt-3 mb-0" role="status">Select a camera to start live view.</p>
+                </div>
+            </div>
+        </div>
+    </div>
 
     @foreach (var device in Model.Devices)
     {
@@ -305,6 +394,158 @@ else
 @section Scripts {
     <script>
         (() => {
+            const snapshotModal = document.getElementById("snapshot-modal");
+            if (snapshotModal) {
+                bootstrap.Modal.getOrCreateInstance(snapshotModal).show();
+            }
+
+            const liveViewModal = document.getElementById("live-view-modal");
+            const liveViewVideo = document.getElementById("live-view-video");
+            const liveViewStatus = document.getElementById("live-view-status");
+            const liveViewTitle = document.getElementById("live-view-modal-label");
+            const liveViewRequestToken = liveViewModal?.dataset.antiforgeryToken;
+            let activeLiveView = null;
+            let liveViewStartController = null;
+
+            const liveViewErrorMessage = code => ({
+                "unsupported-browser": "This browser cannot receive the live stream.",
+                "blink-authorization-failed": "Blink authorization is no longer valid.",
+                "camera-not-found": "This camera is no longer available.",
+                "live-view-timeout": "Live view setup timed out.",
+                "invalid-request": "The live view request was invalid."
+            }[code] ?? "Live view is unavailable. Please try again.");
+
+            const setLiveViewStatus = message => {
+                liveViewStatus.textContent = message;
+            };
+
+            const waitForIceGathering = peerConnection => {
+                if (peerConnection.iceGatheringState === "complete") {
+                    return Promise.resolve();
+                }
+
+                return new Promise(resolve => {
+                    const timeout = window.setTimeout(done, 5000);
+                    function done() {
+                        window.clearTimeout(timeout);
+                        peerConnection.removeEventListener("icegatheringstatechange", gathered);
+                        resolve();
+                    }
+                    function gathered() {
+                        if (peerConnection.iceGatheringState === "complete") {
+                            done();
+                        }
+                    }
+                    peerConnection.addEventListener("icegatheringstatechange", gathered);
+                });
+            };
+
+            const stopLiveView = async (statusMessage = null, reason = "modal-closed") => {
+                liveViewStartController?.abort();
+                liveViewStartController = null;
+                const active = activeLiveView;
+                activeLiveView = null;
+                if (active) {
+                    active.peerConnection.close();
+                    liveViewVideo.srcObject = null;
+                    try {
+                        await fetch("/api/v1/blink/live-view/stop", {
+                            method: "POST",
+                            credentials: "same-origin",
+                            keepalive: true,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "RequestVerificationToken": liveViewRequestToken
+                            },
+                            body: JSON.stringify({ sessionId: active.sessionId, reason })
+                        });
+                    } catch {
+                    }
+                }
+
+                if (statusMessage) {
+                    setLiveViewStatus(statusMessage);
+                }
+            };
+
+            const startLiveView = async button => {
+                await stopLiveView(null, "replaced");
+                liveViewTitle.textContent = `Live view: ${button.dataset.deviceName}`;
+                liveViewVideo.srcObject = null;
+                setLiveViewStatus("Preparing live view…");
+                bootstrap.Modal.getOrCreateInstance(liveViewModal).show();
+
+                const peerConnection = new RTCPeerConnection({ iceServers: [] });
+                peerConnection.addTransceiver("video", { direction: "recvonly" });
+                peerConnection.addEventListener("track", event => {
+                    liveViewVideo.srcObject = event.streams[0];
+                    void liveViewVideo.play().catch(() => {
+                        setLiveViewStatus("Live view is ready. Use the video controls to play it.");
+                    });
+                });
+                peerConnection.addEventListener("connectionstatechange", () => {
+                    if (activeLiveView?.peerConnection !== peerConnection) {
+                        return;
+                    }
+
+                    if (peerConnection.connectionState === "connected") {
+                        setLiveViewStatus("Live view is connected.");
+                    } else if (peerConnection.connectionState === "disconnected") {
+                        setLiveViewStatus("Live view connection interrupted; waiting to reconnect.");
+                    } else if (["failed", "closed"].includes(peerConnection.connectionState)) {
+                        void stopLiveView("Live view ended.", "peer-failed");
+                    }
+                });
+
+                liveViewStartController = new AbortController();
+                try {
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    await waitForIceGathering(peerConnection);
+                    const response = await fetch("/api/v1/blink/live-view", {
+                        method: "POST",
+                        credentials: "same-origin",
+                        signal: liveViewStartController.signal,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "RequestVerificationToken": liveViewRequestToken
+                        },
+                        body: JSON.stringify({
+                            deviceId: button.dataset.deviceId,
+                            sdp: peerConnection.localDescription.sdp
+                        })
+                    });
+                    const result = await response.json().catch(() => ({}));
+                    if (!response.ok || !result.sessionId || !result.sdp || result.type !== "answer") {
+                        throw new Error(result.error || "live-view-unavailable");
+                    }
+
+                    activeLiveView = { peerConnection, sessionId: result.sessionId };
+                    liveViewStartController = null;
+                    await peerConnection.setRemoteDescription({ type: result.type, sdp: result.sdp });
+                    setLiveViewStatus("Connecting to camera…");
+                } catch (error) {
+                    if (error.name !== "AbortError") {
+                        setLiveViewStatus(liveViewErrorMessage(error.message));
+                    }
+                    if (activeLiveView?.peerConnection === peerConnection) {
+                        await stopLiveView(null, "start-failed");
+                    } else {
+                        peerConnection.close();
+                    }
+                } finally {
+                    if (liveViewStartController?.signal.aborted) {
+                        liveViewStartController = null;
+                    }
+                }
+            };
+
+            document.querySelectorAll(".blink-live-view-button").forEach(button => {
+                button.addEventListener("click", () => void startLiveView(button));
+            });
+            liveViewModal?.addEventListener("hidden.bs.modal", () => void stopLiveView(null, "modal-closed"));
+            window.addEventListener("pagehide", () => void stopLiveView(null, "page-unload"));
+
             const filterCheckboxes = group =>
                 Array.from(document.querySelectorAll(
                     `.device-filter-checkbox[data-filter-group="${group}"]`));
@@ -398,6 +639,17 @@ else
 
                 if (event.target.matches(".colour-update-toggle")) {
                     document.getElementById(event.target.dataset.controlTarget).disabled = !event.target.checked;
+                }
+
+                if (event.target.matches(".group-membership-checkbox")) {
+                    event.target.closest(".group-membership-form").dataset.groupMembershipChanged = "true";
+                }
+            });
+
+            document.addEventListener("hidden.bs.dropdown", event => {
+                const form = event.target.closest(".group-membership-form");
+                if (form?.dataset.groupMembershipChanged === "true") {
+                    form.requestSubmit();
                 }
             });
 

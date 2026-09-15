@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace DaveHome;
@@ -13,6 +14,7 @@ public enum TextCommandIntent
     SetBrightness,
     SetColour,
     GetLightStatus,
+    GetCameraSnapshot,
 }
 
 public enum CommandTargetStatus
@@ -23,6 +25,8 @@ public enum CommandTargetStatus
     AmbiguousLocation,
     MissingSourceLocation,
     Unsupported,
+    UnknownCamera,
+    AmbiguousCamera,
 }
 
 public enum CommandOutcome
@@ -38,7 +42,8 @@ public sealed record CommandParseResult(
     TextCommandIntent Intent,
     string? LocationName = null,
     int? Brightness = null,
-    DeviceColour? Colour = null)
+    DeviceColour? Colour = null,
+    string? DeviceName = null)
 {
     public bool Succeeded => Intent != TextCommandIntent.Unknown;
 }
@@ -62,9 +67,13 @@ public sealed record CommandExecutionResult(
     TextCommandIntent Intent,
     string TargetSummary,
     CommandOutcome Outcome,
-    SafeUserMessage Message);
+    SafeUserMessage Message,
+    [property: JsonIgnore] DeviceSnapshot? Snapshot = null);
 
-public sealed record CommandSource(string Source, Guid? LocationId = null);
+public sealed record CommandSource(
+    string Source,
+    Guid? LocationId = null,
+    bool AllowsBrowserSnapshot = false);
 
 public interface ICommandProcessor
 {
@@ -130,6 +139,12 @@ public static class TextCommandParser
     private static readonly Regex StatusPattern = new(
         "^are (?<location>.+) lights on$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex SnapshotFromPattern = new(
+        "^(?:show|get) snapshot from (?<camera>.+)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex CameraSnapshotPattern = new(
+        "^(?:show|get) (?<camera>.+) camera snapshot$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static CommandParseResult Parse(string? transcript)
     {
@@ -187,6 +202,20 @@ public static class TextCommandParser
                 Colour: value);
         }
 
+        var snapshot = SnapshotFromPattern.Match(command.Transcript);
+        if (!snapshot.Success)
+        {
+            snapshot = CameraSnapshotPattern.Match(command.Transcript);
+        }
+
+        if (snapshot.Success)
+        {
+            return new CommandParseResult(
+                command,
+                TextCommandIntent.GetCameraSnapshot,
+                DeviceName: snapshot.Groups["camera"].Value);
+        }
+
         var status = StatusPattern.Match(command.Transcript);
         return status.Success
             ? new CommandParseResult(
@@ -227,6 +256,10 @@ public sealed class CommandProcessor(
     private const int MaximumAuditFieldLength = 500;
 
     private readonly IReadOnlyDictionary<string, IDeviceProvider> _providers = deviceProviders
+        .GroupBy(provider => provider.DeviceType, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+    private readonly IReadOnlyDictionary<string, IDeviceSnapshotProvider> _snapshotProviders = deviceProviders
+        .OfType<IDeviceSnapshotProvider>()
         .GroupBy(provider => provider.DeviceType, StringComparer.Ordinal)
         .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
 
@@ -312,6 +345,18 @@ public sealed class CommandProcessor(
                 new SafeUserMessage("malformed", "I did not understand that command."));
         }
 
+        if (parse.Intent == TextCommandIntent.GetCameraSnapshot && !source.AllowsBrowserSnapshot)
+        {
+            return CreateResult(
+                correlationId,
+                parse,
+                "Browser display required",
+                CommandOutcome.Rejected,
+                new SafeUserMessage(
+                    "snapshot-browser-only",
+                    "Camera snapshots can only be displayed from the browser command page."));
+        }
+
         var target = ResolveTarget(parse, source);
         if (target.Status != CommandTargetStatus.Resolved)
         {
@@ -323,41 +368,59 @@ public sealed class CommandProcessor(
                 TargetMessage(target));
         }
 
-        return parse.Intent == TextCommandIntent.GetLightStatus
-            ? await ReadStatusAsync(correlationId, parse, target, cancellationToken)
-            : await SetStateAsync(correlationId, parse, target, cancellationToken);
+        return parse.Intent switch
+        {
+            TextCommandIntent.GetLightStatus =>
+                await ReadStatusAsync(correlationId, parse, target, cancellationToken),
+            TextCommandIntent.GetCameraSnapshot =>
+                await ReadSnapshotAsync(correlationId, parse, target, cancellationToken),
+            _ => await SetStateAsync(correlationId, parse, target, cancellationToken),
+        };
     }
 
     private CommandTarget ResolveTarget(CommandParseResult parse, CommandSource source)
     {
+        if (parse.Intent == TextCommandIntent.GetCameraSnapshot)
+        {
+            return ResolveSnapshotTarget(parse);
+        }
+
         var state = homeStateStore.Current;
         Location? location = null;
+        DeviceGroup? deviceGroup = null;
         var usedSourceLocation = false;
         if (parse.LocationName is { } requestedName)
         {
             var requested = TextCommandNormalizer.Normalize(requestedName);
-            var matches = state.Document.Locations
+            var locationMatches = state.Document.Locations
                 .Where(candidate => TextCommandNormalizer.Normalize(candidate.Name) == requested)
                 .Concat(state.Document.CommandAliases
                     .Where(alias => TextCommandNormalizer.Normalize(alias.Alias) == requested)
                     .Select(alias => state.LocationsById[alias.LocationId]))
                 .DistinctBy(candidate => candidate.Id)
                 .ToArray();
-            if (matches.Length == 0)
+            var groupMatches = state.Document.Groups
+                .Where(candidate => TextCommandNormalizer.Normalize(candidate.Name) == requested)
+                .ToArray();
+            if (locationMatches.Length == 0 && groupMatches.Length == 0)
             {
                 return new CommandTarget(CommandTargetStatus.UnknownLocation, "Unknown location", Array.Empty<Device>());
             }
 
-            if (matches.Length != 1)
+            if (locationMatches.Length + groupMatches.Length != 1)
             {
                 return new CommandTarget(
                     CommandTargetStatus.AmbiguousLocation,
-                    "Ambiguous location",
+                    "Ambiguous group or location",
                     Array.Empty<Device>(),
-                    matches.Select(match => match.Name).Order(StringComparer.OrdinalIgnoreCase).ToArray());
+                    locationMatches.Select(match => $"Location: {match.Name}")
+                        .Concat(groupMatches.Select(match => $"Group: {match.Name}"))
+                        .Order(StringComparer.OrdinalIgnoreCase)
+                        .ToArray());
             }
 
-            location = matches[0];
+            location = locationMatches.SingleOrDefault();
+            deviceGroup = groupMatches.SingleOrDefault();
         }
         else if (source.LocationId is { } sourceLocationId &&
                  state.LocationsById.TryGetValue(sourceLocationId, out var sourceLocation))
@@ -373,13 +436,17 @@ public sealed class CommandProcessor(
                 Array.Empty<Device>());
         }
 
-        var includedLocationIds = GetDescendantLocationIds(location.Id, state.Document.Locations);
         var requiredCapability = RequiredCapability(parse.Intent);
-        var devices = state.Document.Devices
-            .Where(device => device.Enabled &&
-                device.LocationId is { } deviceLocationId &&
-                includedLocationIds.Contains(deviceLocationId) &&
-                device.Capabilities.HasFlag(requiredCapability))
+        var includedLocationIds = deviceGroup is null
+            ? GetDescendantLocationIds(location!.Id, state.Document.Locations)
+            : null;
+        var devices = (deviceGroup is not null
+                ? state.Document.Devices.Where(device =>
+                    device.GroupIds?.Contains(deviceGroup.Id) == true)
+                : state.Document.Devices.Where(device =>
+                    device.LocationId is { } deviceLocationId &&
+                    includedLocationIds!.Contains(deviceLocationId)))
+            .Where(device => device.Enabled && device.Capabilities.HasFlag(requiredCapability))
             .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.Id)
             .ToArray();
@@ -387,7 +454,7 @@ public sealed class CommandProcessor(
         {
             return new CommandTarget(
                 CommandTargetStatus.Unsupported,
-                $"{location.Name}: no supported lights",
+                $"{(deviceGroup?.Name ?? location!.Name)}: no supported lights",
                 Array.Empty<Device>());
         }
 
@@ -395,17 +462,58 @@ public sealed class CommandProcessor(
         {
             return new CommandTarget(
                 CommandTargetStatus.Unsupported,
-                $"{location.Name}: unavailable light provider",
+                $"{(deviceGroup?.Name ?? location!.Name)}: unavailable light provider",
                 Array.Empty<Device>());
         }
 
-        var locationDescription = usedSourceLocation
-            ? $"{location.Name} (source location)"
-            : location.Name;
+        var locationDescription = deviceGroup is not null
+            ? $"Group {deviceGroup.Name}"
+            : usedSourceLocation
+                ? $"{location!.Name} (source location)"
+                : location!.Name;
         return new CommandTarget(
             CommandTargetStatus.Resolved,
             $"{locationDescription}: {devices.Length} light{(devices.Length == 1 ? string.Empty : "s")}",
             devices);
+    }
+
+    private CommandTarget ResolveSnapshotTarget(CommandParseResult parse)
+    {
+        var cameraName = TextCommandNormalizer.Normalize(parse.DeviceName);
+        var cameras = homeStateStore.Current.Document.Devices
+            .Where(device => device.Enabled &&
+                device.DeviceType == "blink.camera" &&
+                TextCommandNormalizer.Normalize(device.Name) == cameraName)
+            .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.Id)
+            .ToArray();
+        if (cameras.Length == 0)
+        {
+            return new CommandTarget(CommandTargetStatus.UnknownCamera, "Unknown camera", Array.Empty<Device>());
+        }
+
+        if (cameras.Length != 1)
+        {
+            return new CommandTarget(
+                CommandTargetStatus.AmbiguousCamera,
+                "Ambiguous camera",
+                Array.Empty<Device>(),
+                cameras.Select(camera => camera.Name).ToArray());
+        }
+
+        var camera = cameras[0];
+        if (!_snapshotProviders.ContainsKey(camera.DeviceType))
+        {
+            return new CommandTarget(
+                CommandTargetStatus.Unsupported,
+                $"{camera.Name}: unavailable camera provider",
+                Array.Empty<Device>());
+        }
+
+        return new CommandTarget(
+            CommandTargetStatus.Resolved,
+            $"{camera.Name}: Blink camera",
+            [camera]);
     }
 
     private async Task<CommandExecutionResult> SetStateAsync(
@@ -516,6 +624,36 @@ public sealed class CommandProcessor(
             new SafeUserMessage("status", $"The {target.Devices.Count} lights {stateDescription}."));
     }
 
+    private async Task<CommandExecutionResult> ReadSnapshotAsync(
+        Guid correlationId,
+        CommandParseResult parse,
+        CommandTarget target,
+        CancellationToken cancellationToken)
+    {
+        var camera = target.Devices.Single();
+        var result = await _snapshotProviders[camera.DeviceType]
+            .GetSnapshotAsync(camera, cancellationToken);
+        if (!result.Succeeded || result.Snapshot is null)
+        {
+            return CreateResult(
+                correlationId,
+                parse,
+                target.Summary,
+                CommandOutcome.Failed,
+                new SafeUserMessage(
+                    "snapshot-failed",
+                    result.Detail ?? "I could not retrieve that camera snapshot."));
+        }
+
+        return CreateResult(
+            correlationId,
+            parse,
+            target.Summary,
+            CommandOutcome.Completed,
+            new SafeUserMessage("snapshot", $"Retrieved the snapshot from {camera.Name}."),
+            result.Snapshot);
+    }
+
     private static CommandExecutionResult CompletionResult(
         Guid correlationId,
         CommandParseResult parse,
@@ -547,14 +685,16 @@ public sealed class CommandProcessor(
         CommandParseResult parse,
         string targetSummary,
         CommandOutcome outcome,
-        SafeUserMessage message) =>
+        SafeUserMessage message,
+        DeviceSnapshot? snapshot = null) =>
         new(
             correlationId,
             parse.Command.Transcript,
             parse.Intent,
             BoundAuditField(targetSummary),
             outcome,
-            message);
+            message,
+            snapshot);
 
     private static string BoundAuditField(string? value)
     {
@@ -566,6 +706,10 @@ public sealed class CommandProcessor(
 
     private static SafeUserMessage TargetMessage(CommandTarget target) => target.Status switch
     {
+        CommandTargetStatus.UnknownCamera =>
+            new("unknown-camera", "I could not find that Blink camera."),
+        CommandTargetStatus.AmbiguousCamera =>
+            new("ambiguous-camera", "That Blink camera name is ambiguous."),
         CommandTargetStatus.UnknownLocation =>
             new("unknown-location", "I could not find that location."),
         CommandTargetStatus.AmbiguousLocation =>

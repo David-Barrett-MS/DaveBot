@@ -10,6 +10,7 @@ namespace DaveBrain.Pages.Devices;
 public sealed class IndexModel(
     HueHubService hueHubs,
     PhilipsAirPlusHubService airPlus,
+    BlinkHubService blink,
     IHomeStateStore homeStateStore) : PageModel
 {
     public sealed record ColourPickerValue(string Hex, int Brightness, double X, double Y);
@@ -21,9 +22,15 @@ public sealed class IndexModel(
 
     public IReadOnlyList<Location> Locations { get; private set; } = Array.Empty<Location>();
 
+    public IReadOnlyList<DeviceGroup> Groups { get; private set; } = Array.Empty<DeviceGroup>();
+
     public IReadOnlyList<string> DeviceTypes { get; private set; } = Array.Empty<string>();
 
     public DeviceOperationResult? Result { get; private set; }
+
+    public DeviceSnapshot? Snapshot { get; private set; }
+
+    public string? SnapshotDeviceName { get; private set; }
 
     public void OnGet(string? locationFilter, string? typeFilter)
     {
@@ -55,46 +62,57 @@ public sealed class IndexModel(
 
         try
         {
-            Result = action == "set-colour-brightness"
-                ? await SetColourAndBrightnessAsync(
-                    device,
-                    updateColour,
-                    colourX,
-                    colourY,
-                    updateBrightness,
-                    brightness,
-                    cancellationToken)
-                : action switch
-                {
-                    "read" when device.DeviceType == "hue.light" =>
-                        await hueHubs.ReadLightStateAsync(device, cancellationToken),
-                    "on" when device.DeviceType == "hue.light" &&
-                        device.Capabilities.HasFlag(DeviceCapabilities.OnOff) => await hueHubs.SetLightStateAsync(
+            if (action == "snapshot" && device.DeviceType == "blink.camera")
+            {
+                var snapshot = await blink.GetSnapshotAsync(device, cancellationToken);
+                Result = new DeviceOperationResult(snapshot.Status, Detail: snapshot.Detail);
+                Snapshot = snapshot.Snapshot;
+                SnapshotDeviceName = snapshot.Snapshot is null ? null : device.Name;
+                Response.Headers.CacheControl = "no-store";
+            }
+            else
+            {
+                Result = action == "set-colour-brightness"
+                    ? await SetColourAndBrightnessAsync(
                         device,
-                        new DeviceStateChange(IsOn: true),
-                        cancellationToken),
-                    "off" when device.DeviceType == "hue.light" &&
-                        device.Capabilities.HasFlag(DeviceCapabilities.OnOff) => await hueHubs.SetLightStateAsync(
-                        device,
-                        new DeviceStateChange(IsOn: false),
-                        cancellationToken),
-                    "brightness" when device.DeviceType == "hue.light" &&
-                        device.Capabilities.HasFlag(DeviceCapabilities.Brightness) &&
-                        brightness is >= 0 and <= 100 =>
-                        await hueHubs.SetLightStateAsync(
-                        device,
-                        new DeviceStateChange(Brightness: brightness),
-                        cancellationToken),
-                    "read" when device.DeviceType == "philips.airplus" => await airPlus.ReadDeviceStateAsync(
-                        device,
-                        cancellationToken),
-                    "set-fan-speed" when device.DeviceType == "philips.airplus" && fanSpeed is not null =>
-                        await airPlus.SetFanSpeedAsync(device, fanSpeed.Value, cancellationToken),
-                    "disable" => await SetEnabledAsync(device, false, cancellationToken),
-                    "enable" => await SetEnabledAsync(device, true, cancellationToken),
-                    "remove" => await RemoveAsync(device, cancellationToken),
-                    _ => new DeviceOperationResult(DeviceOperationStatus.InvalidState),
-                };
+                        updateColour,
+                        colourX,
+                        colourY,
+                        updateBrightness,
+                        brightness,
+                        cancellationToken)
+                    : action switch
+                    {
+                        "read" when device.DeviceType == "hue.light" =>
+                            await hueHubs.ReadLightStateAsync(device, cancellationToken),
+                        "on" when device.DeviceType == "hue.light" &&
+                            device.Capabilities.HasFlag(DeviceCapabilities.OnOff) => await hueHubs.SetLightStateAsync(
+                            device,
+                            new DeviceStateChange(IsOn: true),
+                            cancellationToken),
+                        "off" when device.DeviceType == "hue.light" &&
+                            device.Capabilities.HasFlag(DeviceCapabilities.OnOff) => await hueHubs.SetLightStateAsync(
+                            device,
+                            new DeviceStateChange(IsOn: false),
+                            cancellationToken),
+                        "brightness" when device.DeviceType == "hue.light" &&
+                            device.Capabilities.HasFlag(DeviceCapabilities.Brightness) &&
+                            brightness is >= 0 and <= 100 =>
+                            await hueHubs.SetLightStateAsync(
+                            device,
+                            new DeviceStateChange(Brightness: brightness),
+                            cancellationToken),
+                        "read" when device.DeviceType == "philips.airplus" => await airPlus.ReadDeviceStateAsync(
+                            device,
+                            cancellationToken),
+                        "set-fan-speed" when device.DeviceType == "philips.airplus" && fanSpeed is not null =>
+                            await airPlus.SetFanSpeedAsync(device, fanSpeed.Value, cancellationToken),
+                        "disable" => await SetEnabledAsync(device, false, cancellationToken),
+                        "enable" => await SetEnabledAsync(device, true, cancellationToken),
+                        "remove" => await RemoveAsync(device, cancellationToken),
+                        _ => new DeviceOperationResult(DeviceOperationStatus.InvalidState),
+                    };
+            }
         }
         catch (InvalidOperationException exception)
         {
@@ -133,6 +151,48 @@ public sealed class IndexModel(
                 {
                     Devices = state.Document.Devices.Select(candidate => candidate.Id == deviceId
                         ? candidate with { LocationId = locationId }
+                        : candidate).ToArray(),
+                };
+            }, homeStateStore.Current.Revision, cancellationToken);
+            Result = new DeviceOperationResult(DeviceOperationStatus.Succeeded);
+        }
+        catch (InvalidOperationException exception)
+        {
+            ModelState.AddModelError(string.Empty, exception.Message);
+        }
+
+        LoadDevices();
+        return Page();
+    }
+
+    public async Task<IActionResult> OnPostUpdateGroupsAsync(
+        Guid deviceId,
+        Guid[]? groupIds,
+        string? locationFilter,
+        string? typeFilter,
+        CancellationToken cancellationToken)
+    {
+        SetFilters(locationFilter, typeFilter);
+        var selectedGroupIds = (groupIds ?? Array.Empty<Guid>()).Distinct().ToArray();
+        try
+        {
+            await homeStateStore.UpdateAsync(state =>
+            {
+                if (!state.DevicesById.TryGetValue(deviceId, out var device) ||
+                    !IsManagedDevice(device))
+                {
+                    throw new InvalidOperationException("The device does not exist.");
+                }
+
+                if (selectedGroupIds.Any(groupId => !state.GroupsById.ContainsKey(groupId)))
+                {
+                    throw new InvalidOperationException("One or more selected groups do not exist.");
+                }
+
+                return state.Document with
+                {
+                    Devices = state.Document.Devices.Select(candidate => candidate.Id == deviceId
+                        ? candidate with { GroupIds = selectedGroupIds }
                         : candidate).ToArray(),
                 };
             }, homeStateStore.Current.Revision, cancellationToken);
@@ -253,6 +313,9 @@ public sealed class IndexModel(
             case "philips.airplus":
                 await airPlus.SetDeviceEnabledAsync(device.Id, enabled, cancellationToken);
                 break;
+            case "blink.camera":
+                await blink.SetDeviceEnabledAsync(device.Id, enabled, cancellationToken);
+                break;
             default:
                 throw new InvalidOperationException("The device provider is not supported.");
         }
@@ -304,6 +367,9 @@ public sealed class IndexModel(
             case "philips.airplus":
                 await airPlus.RemoveDeviceAsync(device.Id, cancellationToken);
                 break;
+            case "blink.camera":
+                await blink.RemoveDeviceAsync(device.Id, cancellationToken);
+                break;
             default:
                 throw new InvalidOperationException("The device provider is not supported.");
         }
@@ -315,10 +381,14 @@ public sealed class IndexModel(
     {
         Devices = hueHubs.GetMappedHueDevices()
             .Concat(airPlus.GetMappedDevices())
+            .Concat(blink.GetMappedDevices())
             .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         Locations = homeStateStore.Current.LocationsById.Values
             .OrderBy(location => location.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        Groups = homeStateStore.Current.GroupsById.Values
+            .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         DeviceTypes = Devices
             .Select(device => device.DeviceType)
@@ -344,10 +414,11 @@ public sealed class IndexModel(
     private Device? GetManagedDevice(Guid deviceId) =>
         hueHubs.GetMappedHueDevices()
             .Concat(airPlus.GetMappedDevices())
+            .Concat(blink.GetMappedDevices())
             .SingleOrDefault(candidate => candidate.Id == deviceId);
 
     private static bool IsManagedDevice(Device device) =>
-        device.DeviceType is "hue.light" or "hue.switch" or "hue.motion-sensor" or "philips.airplus";
+        device.DeviceType is "hue.light" or "hue.switch" or "hue.motion-sensor" or "philips.airplus" or "blink.camera";
 
     private static bool IsValidColour(double? x, double? y) =>
         x is >= 0 and <= 1 &&

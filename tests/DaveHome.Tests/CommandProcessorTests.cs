@@ -62,6 +62,50 @@ public sealed class CommandProcessorTests
     }
 
     [Fact]
+    public async Task ExplicitGroupTargetsAllEnabledMembersAcrossLocations()
+    {
+        var kitchen = new Location(Guid.NewGuid(), "Kitchen", null);
+        var bedroom = new Location(Guid.NewGuid(), "Bedroom", null);
+        var evening = new DeviceGroup(Guid.NewGuid(), "Evening");
+        var kitchenLight = CreateLight("Kitchen light", kitchen.Id) with { GroupIds = [evening.Id] };
+        var bedroomLight = CreateLight("Bedroom light", bedroom.Id) with { GroupIds = [evening.Id] };
+        var disabledLight = CreateLight("Disabled light", bedroom.Id) with
+        {
+            Enabled = false,
+            GroupIds = [evening.Id],
+        };
+        var store = await CreateStoreAsync(
+            [kitchen, bedroom],
+            [kitchenLight, bedroomLight, disabledLight],
+            groups: [evening]);
+        var provider = new RecordingProvider();
+        var processor = new CommandProcessor(store, [provider], new InMemoryCommandAuditStore());
+
+        var result = await processor.ProcessAsync("turn evening lights on", new CommandSource("admin"));
+
+        Assert.Equal(CommandOutcome.Completed, result.Outcome);
+        Assert.Equal([bedroomLight.Id, kitchenLight.Id], provider.SetDevices);
+        Assert.StartsWith("Group Evening:", result.TargetSummary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GroupAndLocationNameCollisionIsRejectedWithoutActions()
+    {
+        var kitchen = new Location(Guid.NewGuid(), "Kitchen", null);
+        var group = new DeviceGroup(Guid.NewGuid(), "Kitchen");
+        var light = CreateLight("Light", kitchen.Id) with { GroupIds = [group.Id] };
+        var store = await CreateStoreAsync([kitchen], [light], groups: [group]);
+        var provider = new RecordingProvider();
+        var processor = new CommandProcessor(store, [provider], new InMemoryCommandAuditStore());
+
+        var result = await processor.ProcessAsync("turn kitchen lights on", new CommandSource("admin"));
+
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Equal("ambiguous-location", result.Message.Code);
+        Assert.Empty(provider.SetDevices);
+    }
+
+    [Fact]
     public async Task AmbiguousAndUnsupportedCommandsMakeNoDeviceAction()
     {
         var kitchen = new Location(Guid.NewGuid(), "Kitchen", null);
@@ -118,6 +162,65 @@ public sealed class CommandProcessorTests
         Assert.Equal(CommandOutcome.Completed, result.Outcome);
         Assert.Equal("status", result.Message.Code);
         Assert.Equal([light.Id], provider.ReadDevices);
+    }
+
+    [Fact]
+    public async Task SnapshotCommandReturnsOnlyTransientImageData()
+    {
+        var hub = new Hub(
+            Guid.NewGuid(),
+            "Blink",
+            "blink",
+            "https://rest-e002.immedia-semi.com/",
+            "secret",
+            true);
+        var camera = new Device(
+            Guid.NewGuid(),
+            "Front door",
+            "blink.camera",
+            null,
+            HubId: hub.Id,
+            ExternalResourceId: "camera-id");
+        var store = await CreateStoreAsync([], [camera], hubs: [hub]);
+        var audit = new InMemoryCommandAuditStore();
+        var processor = new CommandProcessor(store, [new SnapshotProvider()], audit);
+
+        var result = await processor.ProcessAsync(
+            "show snapshot from front door",
+            new CommandSource("admin", AllowsBrowserSnapshot: true));
+
+        Assert.Equal(CommandOutcome.Completed, result.Outcome);
+        Assert.Equal(TextCommandIntent.GetCameraSnapshot, result.Intent);
+        Assert.Equal("snapshot", result.Message.Code);
+        Assert.Equal("image/jpeg", result.Snapshot!.ContentType);
+        Assert.Equal([1, 2, 3], result.Snapshot.Content);
+        Assert.DoesNotContain(
+            "\"snapshot\":",
+            System.Text.Json.JsonSerializer.Serialize(result),
+            StringComparison.OrdinalIgnoreCase);
+        var entry = Assert.Single(audit.ReadRecent(1));
+        Assert.DoesNotContain("1, 2, 3", entry.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SnapshotCommandsAreRejectedOutsideTheBrowser()
+    {
+        var camera = new Device(
+            Guid.NewGuid(),
+            "Front door",
+            "blink.camera",
+            null,
+            HubId: Guid.NewGuid(),
+            ExternalResourceId: "camera-id");
+        var hub = new Hub(camera.HubId!.Value, "Blink", "blink", "https://rest-e002.immedia-semi.com/", "secret", true);
+        var store = await CreateStoreAsync([], [camera], hubs: [hub]);
+        var processor = new CommandProcessor(store, [new SnapshotProvider()], new InMemoryCommandAuditStore());
+
+        var result = await processor.ProcessAsync("get snapshot from front door", new CommandSource("ear:test"));
+
+        Assert.Equal(CommandOutcome.Rejected, result.Outcome);
+        Assert.Equal("snapshot-browser-only", result.Message.Code);
+        Assert.Null(result.Snapshot);
     }
 
     [Fact]
@@ -199,7 +302,9 @@ public sealed class CommandProcessorTests
     private static async Task<HomeStateStore> CreateStoreAsync(
         IReadOnlyList<Location> locations,
         IReadOnlyList<Device> devices,
-        IReadOnlyList<CommandAlias>? aliases = null)
+        IReadOnlyList<CommandAlias>? aliases = null,
+        IReadOnlyList<DeviceGroup>? groups = null,
+        IReadOnlyList<Hub>? hubs = null)
     {
         var store = new HomeStateStore(new InMemoryPersistence());
         await store.InitializeAsync();
@@ -210,6 +315,8 @@ public sealed class CommandProcessorTests
             devices)
         {
             CommandAliases = aliases ?? Array.Empty<CommandAlias>(),
+            Groups = groups ?? Array.Empty<DeviceGroup>(),
+            Hubs = hubs ?? Array.Empty<Hub>(),
         }, StoreRevision.Initial);
         return store;
     }
@@ -264,5 +371,29 @@ public sealed class CommandProcessorTests
                 ? new DeviceOperationResult(DeviceOperationStatus.BridgeUnavailable)
                 : new DeviceOperationResult(DeviceOperationStatus.Succeeded, State));
         }
+
+    }
+
+    private sealed class SnapshotProvider : IDeviceProvider, IDeviceSnapshotProvider
+    {
+        public string DeviceType => "blink.camera";
+
+        public Task<DeviceOperationResult> GetStateAsync(
+            Device device,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DeviceOperationResult(DeviceOperationStatus.InvalidState));
+
+        public Task<DeviceOperationResult> SetStateAsync(
+            Device device,
+            DeviceStateChange change,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DeviceOperationResult(DeviceOperationStatus.InvalidState));
+
+        public Task<DeviceSnapshotResult> GetSnapshotAsync(
+            Device device,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DeviceSnapshotResult(
+                DeviceOperationStatus.Succeeded,
+                new DeviceSnapshot("image/jpeg", [1, 2, 3])));
     }
 }

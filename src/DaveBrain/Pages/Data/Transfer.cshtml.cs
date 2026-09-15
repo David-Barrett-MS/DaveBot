@@ -68,7 +68,7 @@ public sealed class TransferModel(HomeDataTransferService transfer) : PageModel
 
             var result = await transfer.ImportAsync(document, cancellationToken);
             TempData["StatusMessage"] =
-                $"Imported {result.ImportedLocations} location(s) and {result.ImportedDevices} device(s).";
+                $"Imported {result.ImportedLocations} location(s), {result.ImportedGroups} group(s), and {result.ImportedDevices} device(s).";
             return RedirectToPage();
         }
         catch (JsonException)

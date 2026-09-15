@@ -12,6 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="SIPSorcery" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Remove="*.deps.json;*.runtimeconfig.json;*.staticwebassets.endpoints.json;*.dll;*.pdb;*.exe;web.config;wwwroot\DaveBrain.styles.css;wwwroot\**\*.br;wwwroot\**\*.gz" />
   </ItemGroup>
 

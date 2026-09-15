@@ -152,6 +152,33 @@ shadow readings; import it, then use **Read sensors** after it is online. The
 application only permits fan-speed values 1-10, 81, and 82, and does not allow
 arbitrary cloud device-state writes.
 
+## Blink live view
+
+Blink live view requires DaveBrain to make outbound certificate-validated HTTPS
+and TLS/TCP connections to Blink on port 443. Blink's `immis://` stream endpoint
+currently presents a certificate with a chain and endpoint-name mismatch. For
+this client only, DaveBrain accepts those two validation errors when a server
+certificate is present, currently valid, and permits TLS server authentication.
+It still rejects an unavailable, expired, or otherwise invalid certificate.
+This exception applies neither to Blink HTTPS APIs nor to any other integration.
+The **Live view** action is available only to the same authenticated
+administrators permitted to operate devices. It establishes a short-lived,
+user-bound WebRTC H.264 session directly from DaveBrain to a current Chromium
+or Edge browser; no Blink address, token, or stream URL is sent to the browser.
+
+The current private-LAN deployment uses direct ICE candidates and does not
+provide a TURN relay. Permit the relevant LAN browser subnets to reach the
+DaveBrain host's dynamically selected UDP ports, and do not publish the service
+to the public internet. If that cannot be guaranteed, disable access to the
+page rather than exposing it through NAT. The SIPSorcery managed package
+packetises the Blink H.264 stream for WebRTC and has no native media dependency.
+
+Live-view state, MPEG-TS packets, and H.264 access units exist only in memory.
+Closing the overlay, leaving the page, connection failure, expiry, or service
+shutdown closes the socket and tells Blink that the command is done. The
+application never writes video segments, stream metadata, Blink live-view
+tokens, or upstream stream addresses to disk or the administration debug log.
+
 ## Hue motion and switch event-stream recovery
 
 DaveBrain tracks mapped Hue switch presses plus Hue motion and ambient

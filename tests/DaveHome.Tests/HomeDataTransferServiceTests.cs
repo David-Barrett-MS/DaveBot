@@ -78,6 +78,26 @@ public sealed class HomeDataTransferServiceTests
         Assert.Equal(alias, Assert.Single(destinationStore.Current.Document.CommandAliases));
     }
 
+    [Fact]
+    public async Task ExportAndImportPreserveGroupsAndMemberships()
+    {
+        var sourceStore = new HomeStateStore(new InMemoryHomePersistence());
+        await sourceStore.InitializeAsync();
+        var group = new DeviceGroup(Guid.NewGuid(), "Downstairs");
+        var device = new Device(Guid.NewGuid(), "Lamp", "test.device", null, GroupIds: [group.Id]);
+        await sourceStore.UpdateAsync(
+            state => state.Document with { Groups = [group], Devices = [device] },
+            StoreRevision.Initial);
+
+        var destinationStore = new HomeStateStore(new InMemoryHomePersistence());
+        await destinationStore.InitializeAsync();
+        await new HomeDataTransferService(destinationStore).ImportAsync(
+            new HomeDataTransferService(sourceStore).Export());
+
+        Assert.Equal(group, Assert.Single(destinationStore.Current.Document.Groups));
+        Assert.Equal([group.Id], Assert.Single(destinationStore.Current.Document.Devices).GroupIds);
+    }
+
     private sealed class InMemoryHomePersistence : IHomeStatePersistence
     {
         private HomeStateDocument? _document;
