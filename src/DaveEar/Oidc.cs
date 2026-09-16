@@ -65,33 +65,51 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
         while (DateTimeOffset.UtcNow < authorization.ExpiresUtc)
         {
             await Task.Delay(TimeSpan.FromSeconds(interval), cancellationToken);
-            using var response = await httpClient.PostAsync(discovery.TokenEndpoint,
-                Form(
-                    ("client_id", clientId),
-                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                    ("device_code", authorization.DeviceCode)),
-                cancellationToken);
-            if (response.IsSuccessStatusCode)
+            HttpResponseMessage response;
+            try
             {
-                return await ReadTokenAsync(response, cancellationToken);
+                response = await httpClient.PostAsync(discovery.TokenEndpoint,
+                    Form(
+                        ("client_id", clientId),
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                        ("device_code", authorization.DeviceCode)),
+                    cancellationToken);
+            }
+            catch (HttpRequestException)
+            {
+                progress("Waiting for a connection to DaveBrain.");
+                continue;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                progress("Waiting for a response from DaveBrain.");
+                continue;
             }
 
-            var error = await ReadOAuthErrorAsync(response, cancellationToken);
-            if (error == "authorization_pending")
+            using (response)
             {
-                progress("Waiting for administrator consent.");
-                continue;
+                if (response.IsSuccessStatusCode)
+                {
+                    return await ReadTokenAsync(response, cancellationToken);
+                }
+
+                var error = await ReadOAuthErrorAsync(response, cancellationToken);
+                if (error == "authorization_pending")
+                {
+                    progress("Waiting for administrator consent.");
+                    continue;
+                }
+                if (error == "slow_down")
+                {
+                    interval = Math.Min(interval + 5, 30);
+                    continue;
+                }
+                if (error is "access_denied" or "expired_token")
+                {
+                    throw new InvalidOperationException($"Device authorization {error}; register again.");
+                }
+                throw new InvalidOperationException($"Device authorization failed ({error ?? ((int)response.StatusCode).ToString()}).");
             }
-            if (error == "slow_down")
-            {
-                interval = Math.Min(interval + 5, 30);
-                continue;
-            }
-            if (error is "access_denied" or "expired_token")
-            {
-                throw new InvalidOperationException($"Device authorization {error}; register again.");
-            }
-            throw new InvalidOperationException($"Device authorization failed ({error ?? ((int)response.StatusCode).ToString()}).");
         }
 
         throw new InvalidOperationException("Device authorization expired; register again.");

@@ -71,6 +71,45 @@ public sealed class ServiceAndOidcTests
     }
 
     [Fact]
+    public async Task DevicePollingRetriesTransientTransportFailure()
+    {
+        var count = 0;
+        var handler = new StubHandler(_ =>
+        {
+            count++;
+            if (count == 1)
+            {
+                throw new HttpRequestException("A transient TLS failure occurred.");
+            }
+
+            return Json("""{"access_token":"access","refresh_token":"refresh","expires_in":600}""");
+        });
+        var client = new DaveEarEnrollmentClient(new HttpClient(handler));
+        var authorization = new DeviceAuthorization(
+            "device",
+            "user",
+            new Uri("https://brain.example.test/verify"),
+            null,
+            1,
+            DateTimeOffset.UtcNow.AddSeconds(3));
+        var progress = new List<string>();
+
+        var token = await client.AwaitDeviceAuthorizationAsync(
+            new OidcDiscovery(
+                new Uri("https://brain.example.test"),
+                new Uri("https://brain.example.test/device"),
+                new Uri("https://brain.example.test/token")),
+            "DaveEar",
+            authorization,
+            progress.Add,
+            CancellationToken.None);
+
+        Assert.Equal("access", token.AccessToken);
+        Assert.Equal(2, count);
+        Assert.Contains("Waiting for a connection to DaveBrain.", progress);
+    }
+
+    [Fact]
     public async Task EnrollmentSendsOnlyCsrAndReturnsIssuedIdentity()
     {
         var handler = new StubHandler(request =>

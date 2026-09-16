@@ -19,9 +19,14 @@ public static class Program
                         ? await StatusAsync(paths)
                         : await RunAsync(paths);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (arguments.ContainsKey("--run"))
         {
             return 0;
+        }
+        catch (OperationCanceledException exception)
+        {
+            Console.Error.WriteLine($"DaveEar: {exception.Message}");
+            return 1;
         }
         catch (Exception exception)
         {
