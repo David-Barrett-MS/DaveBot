@@ -7,7 +7,8 @@ namespace DaveEar;
 
 public sealed class HttpCommandUploader(
     DaveEarConfiguration configuration,
-    MtlsAccessTokenProvider tokens) : ICommandUploader
+    MtlsAccessTokenProvider tokens,
+    Action<string>? verbose = null) : ICommandUploader
 {
     public async Task<UploadResult> UploadAsync(
         Guid earId,
@@ -17,6 +18,7 @@ public sealed class HttpCommandUploader(
     {
         try
         {
+            Trace($"Speech upload: preparing segment {segmentId:D} ({wav.Length} bytes).");
             using var certificate = EarClientCertificateLoader.Load(
                 tokens.Credentials.CertificatePem,
                 tokens.Credentials.PrivateKeyPem);
@@ -38,7 +40,9 @@ public sealed class HttpCommandUploader(
                 Content = form,
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            Trace($"Speech upload: POST {request.RequestUri}.");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            Trace($"Speech upload: received HTTP {(int)response.StatusCode}.");
             if (response.IsSuccessStatusCode)
             {
                 var correlation = await TryReadCorrelationAsync(response, cancellationToken);
@@ -57,18 +61,21 @@ public sealed class HttpCommandUploader(
             }
             return new UploadResult(UploadDisposition.Rejected, $"server-{(int)response.StatusCode}");
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
             // A client timeout can occur after DaveBrain accepted the body; it is not safe to resend.
+            Trace($"Speech upload: timeout ({exception.Message}).");
             return new UploadResult(UploadDisposition.Ambiguous, "upload-timeout");
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException exception)
         {
             // Network failures do not prove that DaveBrain did not receive the request.
+            Trace($"Speech upload: network failure ({exception.Message}).");
             return new UploadResult(UploadDisposition.Ambiguous, "network-outcome-unknown");
         }
-        catch (InvalidOperationException) when (tokens.RequiresReenrollment)
+        catch (InvalidOperationException exception) when (tokens.RequiresReenrollment)
         {
+            Trace($"Speech upload: authentication requires re-enrollment ({exception.Message}).");
             return new UploadResult(UploadDisposition.AuthenticationFailure, "re-enrollment-required");
         }
     }
@@ -77,6 +84,7 @@ public sealed class HttpCommandUploader(
     {
         try
         {
+            Trace($"Heartbeat: preparing request for Ear {earId:D}.");
             using var certificate = EarClientCertificateLoader.Load(
                 tokens.Credentials.CertificatePem,
                 tokens.Credentials.PrivateKeyPem);
@@ -91,7 +99,9 @@ public sealed class HttpCommandUploader(
                 Content = new ByteArrayContent([]),
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await tokens.GetAsync(cancellationToken));
+            Trace($"Heartbeat: POST {request.RequestUri}.");
             using var response = await client.SendAsync(request, cancellationToken);
+            Trace($"Heartbeat: received HTTP {(int)response.StatusCode}.");
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 return new HeartbeatResult(false, "authentication-rejected");
@@ -104,15 +114,19 @@ public sealed class HttpCommandUploader(
             var enabled = document.RootElement.TryGetProperty("enabled", out var property) && property.ValueKind == JsonValueKind.True;
             return new HeartbeatResult(enabled, enabled ? "enabled" : "disabled");
         }
-        catch (InvalidOperationException) when (tokens.RequiresReenrollment)
+        catch (InvalidOperationException exception) when (tokens.RequiresReenrollment)
         {
+            Trace($"Heartbeat: authentication requires re-enrollment ({exception.Message}).");
             return new HeartbeatResult(false, "re-enrollment-required");
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException exception)
         {
+            Trace($"Heartbeat: network failure ({exception.Message}).");
             return new HeartbeatResult(true, "network-unavailable");
         }
     }
+
+    private void Trace(string message) => verbose?.Invoke(message);
 
     private static async Task<Guid?> TryReadCorrelationAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {

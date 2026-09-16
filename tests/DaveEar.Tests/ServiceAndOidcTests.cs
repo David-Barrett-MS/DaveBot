@@ -208,16 +208,20 @@ public sealed class ServiceAndOidcTests
             var provider = new MtlsAccessTokenProvider(
                 configuration, credentials,
                 new OidcDiscovery(configuration.Issuer, new Uri("https://brain.example.test/device"), new Uri("https://brain.example.test/token")));
+            var trace = new List<string>();
             var service = new DaveEarService(
                 configuration, new EmptyCapture(), new EnergyVoiceActivityDetector(1), new PcmWavEncoder(),
                 new ResultUploader(new UploadResult(UploadDisposition.Ambiguous, "network-outcome-unknown")),
-                new RetrySpool(new DaveEarPaths(root), configuration), provider, new MemoryCredentialStore());
+                new RetrySpool(new DaveEarPaths(root), configuration), provider, new MemoryCredentialStore(),
+                verbose: trace.Add);
             var segment = new AudioSegment(Guid.NewGuid(), new float[16_000], 16_000, DateTimeOffset.UtcNow, false);
             var handle = typeof(DaveEarService).GetMethod("HandleUploadAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
             await (Task)handle.Invoke(service, [segment.Id, new PcmWavEncoder().Encode(segment), 0, (Action<string>)(_ => { }), CancellationToken.None])!;
 
             Assert.Equal(1, service.HeldSegments);
             Assert.Empty(await new RetrySpool(new DaveEarPaths(root), configuration).GetDueAsync(CancellationToken.None));
+            Assert.Contains(trace, entry => entry.StartsWith("Sending segment ", StringComparison.Ordinal));
+            Assert.Contains(trace, entry => entry.Contains("disposition=Ambiguous", StringComparison.Ordinal));
         }
         finally
         {

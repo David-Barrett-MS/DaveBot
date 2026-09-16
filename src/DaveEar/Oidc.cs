@@ -13,12 +13,14 @@ public sealed record DeviceAuthorization(string DeviceCode, string UserCode, Uri
 
 public sealed record OAuthToken(string AccessToken, string? RefreshToken, DateTimeOffset ExpiresUtc);
 
-public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
+public sealed class DaveEarEnrollmentClient(HttpClient httpClient, Action<string>? verbose = null)
 {
     public async Task<OidcDiscovery> DiscoverAsync(Uri issuer, CancellationToken cancellationToken)
     {
         RequireHttps(issuer);
+        Trace($"OIDC discovery: GET {new Uri(issuer, "/.well-known/openid-configuration")}.");
         using var response = await httpClient.GetAsync(new Uri(issuer, "/.well-known/openid-configuration"), cancellationToken);
+        Trace($"OIDC discovery: received HTTP {(int)response.StatusCode}.");
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
         var root = document.RootElement;
@@ -35,11 +37,13 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
         string clientId,
         CancellationToken cancellationToken)
     {
+        Trace($"Device authorization: POST {discovery.DeviceAuthorizationEndpoint}.");
         using var response = await httpClient.PostAsync(discovery.DeviceAuthorizationEndpoint,
             Form(
                 ("client_id", clientId),
                 ("scope", "offline_access davebrain.ear.enroll davebrain.ear.command")),
             cancellationToken);
+        Trace($"Device authorization: received HTTP {(int)response.StatusCode}.");
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
         var root = document.RootElement;
@@ -68,6 +72,7 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
             HttpResponseMessage response;
             try
             {
+                Trace($"Device authorization: polling {discovery.TokenEndpoint}.");
                 response = await httpClient.PostAsync(discovery.TokenEndpoint,
                     Form(
                         ("client_id", clientId),
@@ -88,6 +93,7 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
 
             using (response)
             {
+                Trace($"Device authorization: poll received HTTP {(int)response.StatusCode}.");
                 if (response.IsSuccessStatusCode)
                 {
                     return await ReadTokenAsync(response, cancellationToken);
@@ -123,6 +129,7 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
         string csrPem,
         CancellationToken cancellationToken)
     {
+        Trace($"Ear enrollment: POST {new Uri(issuer, "/api/v1/ears/enrollments")}.");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(issuer, "/api/v1/ears/enrollments"))
         {
             Content = JsonContent.Create(new
@@ -134,6 +141,7 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
         using var response = await httpClient.SendAsync(request, cancellationToken);
+        Trace($"Ear enrollment: received HTTP {(int)response.StatusCode}.");
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
         var root = document.RootElement;
@@ -185,6 +193,8 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
             throw new InvalidOperationException("DaveEar only permits HTTPS OIDC endpoints.");
         }
     }
+
+    private void Trace(string message) => verbose?.Invoke(message);
 }
 
 public sealed class MtlsAccessTokenProvider
@@ -194,6 +204,7 @@ public sealed class MtlsAccessTokenProvider
     private readonly DaveEarConfiguration _configuration;
     private readonly OidcDiscovery _discovery;
     private readonly Func<X509Certificate2, HttpClient> _createClient;
+    private readonly Action<string>? _verbose;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private OAuthToken? _current;
     private EarCredentials _credentials;
@@ -202,7 +213,8 @@ public sealed class MtlsAccessTokenProvider
     public MtlsAccessTokenProvider(
         DaveEarConfiguration configuration,
         EarCredentials credentials,
-        OidcDiscovery discovery) : this(
+        OidcDiscovery discovery,
+        Action<string>? verbose = null) : this(
             configuration,
             credentials,
             discovery,
@@ -212,7 +224,8 @@ public sealed class MtlsAccessTokenProvider
                 handler.ClientCertificateOptions = ClientCertificateOption.Manual;
                 handler.ClientCertificates.Add(certificate);
                 return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
-            })
+            },
+            verbose)
     {
     }
 
@@ -220,12 +233,14 @@ public sealed class MtlsAccessTokenProvider
         DaveEarConfiguration configuration,
         EarCredentials credentials,
         OidcDiscovery discovery,
-        Func<X509Certificate2, HttpClient> createClient)
+        Func<X509Certificate2, HttpClient> createClient,
+        Action<string>? verbose = null)
     {
         _configuration = configuration;
         _credentials = credentials;
         _discovery = discovery;
         _createClient = createClient;
+        _verbose = verbose;
     }
 
     public bool RequiresReenrollment { get; private set; }
@@ -241,6 +256,7 @@ public sealed class MtlsAccessTokenProvider
             {
                 await store.SaveAsync(_credentials, cancellationToken);
                 _credentialsChanged = false;
+                Trace("mTLS refresh: persisted the rotated refresh token.");
             }
         }
         finally
@@ -257,6 +273,7 @@ public sealed class MtlsAccessTokenProvider
         }
         if (_current is { ExpiresUtc: var expiry, AccessToken: var accessToken } && expiry > DateTimeOffset.UtcNow.AddMinutes(2))
         {
+            Trace($"mTLS refresh: using cached access token until {expiry:O}.");
             return accessToken;
         }
 
@@ -265,6 +282,7 @@ public sealed class MtlsAccessTokenProvider
         {
             if (_current is { ExpiresUtc: var currentExpiry, AccessToken: var token } && currentExpiry > DateTimeOffset.UtcNow.AddMinutes(2))
             {
+                Trace($"mTLS refresh: using cached access token until {currentExpiry:O}.");
                 return token;
             }
 
@@ -272,8 +290,10 @@ public sealed class MtlsAccessTokenProvider
                 _credentials.CertificatePem,
                 _credentials.PrivateKeyPem);
             using var client = _createClient(certificate);
+            var endpoint = new Uri(_configuration.EffectiveMtlsEndpoint, _discovery.TokenEndpoint.PathAndQuery);
+            Trace($"mTLS refresh: POST {endpoint}.");
             using var response = await client.PostAsync(
-                new Uri(_configuration.EffectiveMtlsEndpoint, _discovery.TokenEndpoint.PathAndQuery),
+                endpoint,
                 new FormUrlEncodedContent(
                 [
                     new("client_id", _configuration.ClientId),
@@ -282,6 +302,7 @@ public sealed class MtlsAccessTokenProvider
                     new("scope", RefreshScopes),
                 ]),
                 cancellationToken);
+            Trace($"mTLS refresh: received HTTP {(int)response.StatusCode}.");
             if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 RequiresReenrollment = true;
@@ -293,6 +314,11 @@ public sealed class MtlsAccessTokenProvider
             {
                 _credentials = _credentials with { RefreshToken = _current.RefreshToken };
                 _credentialsChanged = true;
+                Trace("mTLS refresh: server issued a replacement refresh token.");
+            }
+            else
+            {
+                Trace("mTLS refresh: server did not rotate the refresh token.");
             }
             return _current.AccessToken;
         }
@@ -301,4 +327,6 @@ public sealed class MtlsAccessTokenProvider
             _gate.Release();
         }
     }
+
+    private void Trace(string message) => _verbose?.Invoke(message);
 }

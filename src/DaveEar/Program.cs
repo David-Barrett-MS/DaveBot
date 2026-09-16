@@ -8,16 +8,17 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         var arguments = ParseArguments(args);
+        var verbose = CreateVerboseLogger(arguments);
         try
         {
             var paths = DaveEarPaths.FromArguments(arguments);
             return arguments.ContainsKey("--register")
-                ? await RegisterAsync(arguments, paths)
+                ? await RegisterAsync(arguments, paths, verbose)
                 : arguments.ContainsKey("--diagnose")
-                    ? await DiagnoseAsync(paths)
+                    ? await DiagnoseAsync(paths, verbose)
                     : arguments.ContainsKey("--status")
                         ? await StatusAsync(paths)
-                        : await RunAsync(paths);
+                        : await RunAsync(paths, verbose);
         }
         catch (OperationCanceledException) when (arguments.ContainsKey("--run"))
         {
@@ -35,19 +36,24 @@ public static class Program
         }
     }
 
-    private static async Task<int> RegisterAsync(IReadOnlyDictionary<string, string> arguments, DaveEarPaths paths)
+    private static async Task<int> RegisterAsync(
+        IReadOnlyDictionary<string, string> arguments,
+        DaveEarPaths paths,
+        Action<string>? verbose)
     {
         var issuer = ParseHttpsUri(Required(arguments, "--issuer"));
         var name = Required(arguments, "--name");
         var locationId = Guid.Parse(Required(arguments, "--location"));
+        verbose?.Invoke($"Registration starting for '{name}' at location {locationId:D}.");
         if (File.Exists(paths.ConfigurationPath))
         {
             throw new InvalidOperationException("DaveEar is already registered. Delete its protected state only after revoking the Ear.");
         }
 
         using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        var enrollment = new DaveEarEnrollmentClient(httpClient);
+        var enrollment = new DaveEarEnrollmentClient(httpClient, verbose);
         var discovery = await enrollment.DiscoverAsync(issuer, CancellationToken.None);
+        verbose?.Invoke("Creating a new DaveEar client certificate request.");
         using var privateKey = RSA.Create(3072);
         var request = new CertificateRequest(
             "CN=DaveEar",
@@ -67,6 +73,7 @@ public static class Program
             throw new InvalidOperationException("DaveBrain did not issue a refresh token; registration cannot continue.");
         }
 
+        verbose?.Invoke("Administrator consent received; submitting certificate enrollment.");
         var enrolled = await enrollment.EnrollAsync(
             issuer,
             initialToken,
@@ -81,8 +88,9 @@ public static class Program
         var configuration = DaveEarConfiguration.Create(issuer, name, locationId, enrolled.EarId,
             arguments.GetValueOrDefault("--microphone"));
         var credentialStore = CredentialStoreFactory.Create(paths);
-        var tokens = new MtlsAccessTokenProvider(configuration, credentials, discovery);
+        var tokens = new MtlsAccessTokenProvider(configuration, credentials, discovery, verbose);
         // Require a certificate-presented refresh before anything is persisted as a running Ear.
+        verbose?.Invoke("Verifying the issued certificate with an mTLS refresh request.");
         await tokens.GetAsync(CancellationToken.None);
         await credentialStore.SaveAsync(tokens.Credentials, CancellationToken.None);
         try
@@ -95,16 +103,18 @@ public static class Program
             throw;
         }
 
+        verbose?.Invoke("Registration state saved successfully.");
         Console.WriteLine($"DaveEar registered with Ear ID {enrolled.EarId:D}. Run with --run.");
         return 0;
     }
 
-    private static async Task<int> DiagnoseAsync(DaveEarPaths paths)
+    private static async Task<int> DiagnoseAsync(DaveEarPaths paths, Action<string>? verbose)
     {
+        verbose?.Invoke("Starting diagnostics.");
         var configuration = await DaveEarConfigurationStore.LoadAsync(paths);
         var credentials = await LoadCredentialsAsync(paths);
         using var discoveryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        var discovery = await new DaveEarEnrollmentClient(discoveryClient).DiscoverAsync(configuration.Issuer, CancellationToken.None);
+        var discovery = await new DaveEarEnrollmentClient(discoveryClient, verbose).DiscoverAsync(configuration.Issuer, CancellationToken.None);
         using var certificate = EarClientCertificateLoader.Load(
             credentials.CertificatePem,
             credentials.PrivateKeyPem);
@@ -115,8 +125,9 @@ public static class Program
 
         await using var capture = AudioCaptureFactory.Create(configuration.MicrophoneDevice);
         var microphone = await capture.DiagnoseAsync(CancellationToken.None);
-        var tokens = new MtlsAccessTokenProvider(configuration, credentials, discovery);
-        var uploader = new HttpCommandUploader(configuration, tokens);
+        verbose?.Invoke($"Microphone diagnostic completed: {microphone.Code}.");
+        var tokens = new MtlsAccessTokenProvider(configuration, credentials, discovery, verbose);
+        var uploader = new HttpCommandUploader(configuration, tokens, verbose);
         var heartbeat = await uploader.HeartbeatAsync(configuration.EarId, CancellationToken.None);
         await tokens.PersistRotatedCredentialsAsync(CredentialStoreFactory.Create(paths), CancellationToken.None);
         // This valid silent WAV exercises the protected upload path. A no-speech response is expected.
@@ -137,26 +148,30 @@ public static class Program
         return 0;
     }
 
-    private static async Task<int> RunAsync(DaveEarPaths paths)
+    private static async Task<int> RunAsync(DaveEarPaths paths, Action<string>? verbose)
     {
         var configuration = await DaveEarConfigurationStore.LoadAsync(paths);
         var credentialStore = CredentialStoreFactory.Create(paths);
         var credentials = await LoadCredentialsAsync(paths);
         using var discoveryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        var discovery = await new DaveEarEnrollmentClient(discoveryClient).DiscoverAsync(configuration.Issuer, CancellationToken.None);
+        var discovery = await new DaveEarEnrollmentClient(discoveryClient, verbose).DiscoverAsync(configuration.Issuer, CancellationToken.None);
         await using var capture = AudioCaptureFactory.Create(configuration.MicrophoneDevice);
+        verbose?.Invoke(
+            $"Starting microphone monitoring for Ear {configuration.EarId:D}; device={configuration.MicrophoneDevice ?? "default"}, " +
+            $"threshold={configuration.EnergyThreshold}, endpoint={configuration.EffectiveMtlsEndpoint}.");
         var detector = new EnergyVoiceActivityDetector(configuration.EnergyThreshold);
-        var tokens = new MtlsAccessTokenProvider(configuration, credentials, discovery);
+        var tokens = new MtlsAccessTokenProvider(configuration, credentials, discovery, verbose);
         var service = new DaveEarService(
             configuration,
             capture,
             detector,
             new PcmWavEncoder(),
-            new HttpCommandUploader(configuration, tokens),
+            new HttpCommandUploader(configuration, tokens, verbose),
             new RetrySpool(paths, configuration),
             tokens,
             credentialStore,
-            state => DaveEarStatusStore.Save(paths, state));
+            state => DaveEarStatusStore.Save(paths, state),
+            verbose);
         DaveEarStatusStore.Save(paths, service.GetSafeStatus());
         using var shutdown = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; shutdown.Cancel(); };
@@ -186,7 +201,7 @@ public static class Program
             {
                 throw new InvalidOperationException($"Unknown argument '{args[index]}'.");
             }
-            if (args[index] is "--register" or "--run" or "--diagnose" or "--status")
+            if (args[index] is "--register" or "--run" or "--diagnose" or "--status" or "--verbose")
             {
                 result.Add(args[index], "true");
                 continue;
@@ -203,6 +218,11 @@ public static class Program
         }
         return result;
     }
+
+    private static Action<string>? CreateVerboseLogger(IReadOnlyDictionary<string, string> arguments) =>
+        arguments.ContainsKey("--verbose")
+            ? message => Console.WriteLine($"{DateTimeOffset.Now:O} DaveEar verbose: {message}")
+            : null;
 
     private static string Required(IReadOnlyDictionary<string, string> arguments, string name) =>
         arguments.GetValueOrDefault(name) is { Length: > 0 } value
