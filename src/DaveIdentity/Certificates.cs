@@ -85,7 +85,23 @@ public sealed class EarCertificateAuthority
                 nameof(signingRequest));
         }
 
-        return signingRequest.Create(
+        var request = new CertificateRequest(
+            signingRequest.SubjectName,
+            signingRequest.PublicKey,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(
+            certificateAuthority: false,
+            hasPathLengthConstraint: false,
+            pathLengthConstraint: 0,
+            critical: true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.DigitalSignature,
+            critical: true));
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+            [new Oid("1.3.6.1.5.5.7.3.2")],
+            critical: true));
+        return request.Create(
             _certificateAuthority,
             DateTimeOffset.UtcNow.AddMinutes(-5),
             notAfter,

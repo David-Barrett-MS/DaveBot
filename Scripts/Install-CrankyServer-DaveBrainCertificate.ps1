@@ -59,6 +59,40 @@ function Get-OrAddObjectProperty($object, [string]$name)
     return $property.Value
 }
 
+function Add-TrustedRootCertificate(
+    [Security.Cryptography.X509Certificates.X509Certificate2]$certificate,
+    [string]$description)
+{
+    if ($null -eq $certificate)
+    {
+        return
+    }
+
+    $trustedRootStore = [Security.Cryptography.X509Certificates.X509Store]::new(
+        [Security.Cryptography.X509Certificates.StoreName]::Root,
+        [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+    $trustedRootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+    try
+    {
+        $trustedCertificate = $trustedRootStore.Certificates.Find(
+            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $certificate.Thumbprint,
+            $false)
+        if ($trustedCertificate.Count -eq 0 -and $PSCmdlet.ShouldProcess(
+            'Cert:\LocalMachine\Root',
+            $description))
+        {
+            $trustedRootStore.Add([Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                $certificate.Export(
+                    [Security.Cryptography.X509Certificates.X509ContentType]::Cert)))
+        }
+    }
+    finally
+    {
+        $trustedRootStore.Dispose()
+    }
+}
+
 $tlsSubject = "CN=$DnsName"
 $tlsCertificate = Find-UsableCertificate $tlsSubject
 if ($null -eq $tlsCertificate -and $PSCmdlet.ShouldProcess(
@@ -82,32 +116,7 @@ if ($null -eq $tlsCertificate -and $PSCmdlet.ShouldProcess(
             '2.5.29.37={text}1.3.6.1.5.5.7.3.1')
 }
 
-if ($null -ne $tlsCertificate)
-{
-    $trustedRootStore = [Security.Cryptography.X509Certificates.X509Store]::new(
-        [Security.Cryptography.X509Certificates.StoreName]::Root,
-        [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
-    $trustedRootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    try
-    {
-        $trustedCertificate = $trustedRootStore.Certificates.Find(
-            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-            $tlsCertificate.Thumbprint,
-            $false)
-        if ($trustedCertificate.Count -eq 0 -and $PSCmdlet.ShouldProcess(
-            'Cert:\LocalMachine\Root',
-            "Trust the public self-signed TLS certificate for $DnsName"))
-        {
-            $trustedRootStore.Add([Security.Cryptography.X509Certificates.X509Certificate2]::new(
-                $tlsCertificate.Export(
-                    [Security.Cryptography.X509Certificates.X509ContentType]::Cert)))
-        }
-    }
-    finally
-    {
-        $trustedRootStore.Dispose()
-    }
-}
+Add-TrustedRootCertificate $tlsCertificate "Trust the public self-signed TLS certificate for $DnsName"
 
 $signingSubject = 'CN=DaveBot OAuth Token Signing'
 $signingCertificate = Find-UsableCertificate $signingSubject
@@ -148,6 +157,8 @@ if ($null -eq $earAuthorityCertificate -and $PSCmdlet.ShouldProcess(
         -NotAfter (Get-Date).AddYears(5) `
         -TextExtension '2.5.29.19={critical}{text}CA=true&pathlength=0'
 }
+
+Add-TrustedRootCertificate $earAuthorityCertificate 'Trust the DaveBot Ear client-certificate authority'
 
 if ($null -eq $tlsCertificate -or
     $null -eq $signingCertificate -or

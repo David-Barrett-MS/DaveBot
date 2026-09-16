@@ -26,7 +26,9 @@ requesting a client certificate. DaveEar uses
 command uploads. Both listeners use the same `brain.daves.tips` server TLS
 certificate. The `DaveEarMtls` endpoint must set
 `ClientCertificateMode` to `RequireCertificate`; the application rejects Ear
-requests arriving on the UI/OIDC listener.
+requests arriving on the UI/OIDC listener. The DaveBot Ear client-certificate
+authority must be in `Cert:\LocalMachine\Root` on DaveBrain so Kestrel accepts
+its issued client certificates during the TLS handshake.
 
 ## Service account and directories
 
