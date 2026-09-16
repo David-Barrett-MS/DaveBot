@@ -36,7 +36,10 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
         CancellationToken cancellationToken)
     {
         using var response = await httpClient.PostAsync(discovery.DeviceAuthorizationEndpoint,
-            Form(("client_id", clientId), ("scope", "davebrain.ear.enroll davebrain.ear.command")), cancellationToken);
+            Form(
+                ("client_id", clientId),
+                ("scope", "offline_access davebrain.ear.enroll davebrain.ear.command")),
+            cancellationToken);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
         var root = document.RootElement;

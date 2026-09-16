@@ -20,10 +20,8 @@ public sealed class VerifyModel : PageModel
     {
     }
 
-    public IActionResult OnPost(bool approved)
+    public async Task<IActionResult> OnPostAsync(bool approved)
     {
-        var request = HttpContext.GetOpenIddictServerRequest()
-            ?? throw new InvalidOperationException("The device verification request is unavailable.");
         if (!approved)
         {
             return Forbid(
@@ -33,19 +31,32 @@ public sealed class VerifyModel : PageModel
 
         var subject = User.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? throw new InvalidOperationException("The authenticated user does not have an identifier.");
+        var result = await HttpContext.AuthenticateAsync(
+            OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+        var verificationPrincipal = result.Principal
+            ?? throw new InvalidOperationException("The device verification principal is unavailable.");
+        var verificationIdentity = verificationPrincipal.Identity as ClaimsIdentity
+            ?? throw new InvalidOperationException("The device verification identity is unavailable.");
+        var deviceCodeId = verificationPrincipal.GetClaim(
+            OpenIddictConstants.Claims.Private.DeviceCodeId)
+            ?? throw new InvalidOperationException(
+                "The device verification principal does not contain a device-code identifier.");
         var identity = new ClaimsIdentity(
+            verificationIdentity.Claims,
             OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
             ClaimTypes.Name,
             ClaimTypes.Role);
-        identity.AddClaim(OpenIddictConstants.Claims.Subject, subject);
-        identity.AddClaim(OpenIddictConstants.Claims.Name, User.Identity?.Name ?? subject);
-        identity.AddClaim("client_id", request.ClientId ?? string.Empty);
+        var principal = new ClaimsPrincipal(identity);
+
+        // The authenticated principal carries OpenIddict's internal device-code identifier.
+        identity.SetClaim(OpenIddictConstants.Claims.Private.DeviceCodeId, deviceCodeId);
+        identity.SetClaim(OpenIddictConstants.Claims.Subject, subject);
+        identity.SetClaim(OpenIddictConstants.Claims.Name, User.Identity?.Name ?? subject);
         identity.SetDestinations(claim => claim.Type is
-            OpenIddictConstants.Claims.Subject or "client_id"
+            OpenIddictConstants.Claims.Subject
                 ? [OpenIddictConstants.Destinations.AccessToken]
                 : Array.Empty<string>());
-        var principal = new ClaimsPrincipal(identity);
-        principal.SetScopes(request.GetScopes());
+        principal.SetScopes(verificationPrincipal.GetScopes());
         return SignIn(
             principal,
             new AuthenticationProperties(),

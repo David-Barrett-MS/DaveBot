@@ -18,6 +18,36 @@ public sealed class ServiceAndOidcTests
     }
 
     [Fact]
+    public async Task DeviceAuthorizationRequestsOfflineAccess()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            Assert.Contains("scope=offline_access+davebrain.ear.enroll+davebrain.ear.command", body);
+            return Json("""
+                {
+                  "device_code":"device",
+                  "user_code":"user",
+                  "verification_uri":"https://brain.example.test/verify",
+                  "expires_in":600
+                }
+                """);
+        });
+        var client = new DaveEarEnrollmentClient(new HttpClient(handler));
+
+        var authorization = await client.StartDeviceAuthorizationAsync(
+            new OidcDiscovery(
+                new Uri("https://brain.example.test"),
+                new Uri("https://brain.example.test/device"),
+                new Uri("https://brain.example.test/token")),
+            "DaveEar",
+            CancellationToken.None);
+
+        Assert.Equal("device", authorization.DeviceCode);
+    }
+
+    [Fact]
     public async Task DevicePollingHandlesPendingThenReturnsToken()
     {
         var count = 0;
