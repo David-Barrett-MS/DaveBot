@@ -189,6 +189,8 @@ public sealed class DaveEarEnrollmentClient(HttpClient httpClient)
 
 public sealed class MtlsAccessTokenProvider
 {
+    private const string RefreshScopes = "offline_access davebrain.ear.command";
+
     private readonly DaveEarConfiguration _configuration;
     private readonly OidcDiscovery _discovery;
     private readonly Func<X509Certificate2, HttpClient> _createClient;
@@ -277,7 +279,7 @@ public sealed class MtlsAccessTokenProvider
                     new("client_id", _configuration.ClientId),
                     new("grant_type", "refresh_token"),
                     new("refresh_token", _credentials.RefreshToken),
-                    new("scope", "davebrain.ear.command"),
+                    new("scope", RefreshScopes),
                 ]),
                 cancellationToken);
             if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)

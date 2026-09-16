@@ -1,5 +1,6 @@
 using DaveBrain;
 using DaveHome;
+using DaveIdentity;
 
 namespace DaveBrain.Tests;
 
@@ -86,6 +87,34 @@ public sealed class AdminSessionDebugLogTests
         }
 
         Assert.Empty(log.Read("browser-session"));
+    }
+
+    [Fact]
+    public void EarActivityRecordsLifecycleAndCommands()
+    {
+        var log = new DaveEarActivityLog();
+        var ear = new EarRecord(
+            Guid.NewGuid(),
+            "Kitchen Ear",
+            Guid.NewGuid(),
+            "https://brain.example.test",
+            "administrator-subject",
+            "DaveEar",
+            "certificate-thumbprint",
+            DateTimeOffset.UtcNow,
+            null,
+            Enabled: true);
+
+        log.RecordRegistered(ear);
+        log.RecordConnected(ear);
+        log.RecordConnected(ear);
+        log.RecordCommandReceived(ear, "turn on the kitchen lights");
+        log.RecordDisconnectedEars(DateTimeOffset.UtcNow.AddMinutes(3));
+
+        var entries = log.Read();
+        Assert.Equal(["Registered", "Connected", "Command received", "Disconnected"],
+            entries.Select(entry => entry.Event));
+        Assert.Contains("kitchen lights", entries[2].Details, StringComparison.Ordinal);
     }
 
     private sealed class ImageResponseHandler : HttpMessageHandler

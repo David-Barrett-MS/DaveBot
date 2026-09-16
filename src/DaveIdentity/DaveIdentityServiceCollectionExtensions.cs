@@ -39,7 +39,8 @@ public static class DaveIdentityServiceCollectionExtensions
         services.AddSingleton<Microsoft.AspNetCore.Identity.IPasswordHasher<IdentityUserRecord>,
             Microsoft.AspNetCore.Identity.PasswordHasher<IdentityUserRecord>>();
         services.AddSingleton<LocalUserService>();
-        services.AddSingleton(_ => CreateEarCertificateAuthority(options));
+        var earCertificateAuthority = CreateEarCertificateAuthority(options);
+        services.AddSingleton(earCertificateAuthority);
         services.AddSingleton<EarEnrollmentService>();
         services.AddSingleton<MtlsCertificateBindingValidator>();
         services.AddDbContext<DaveIdentityProtocolDbContext>(database =>
@@ -85,7 +86,6 @@ public static class DaveIdentityServiceCollectionExtensions
                 openIddict.AllowRefreshTokenFlow();
                 openIddict.SetAccessTokenLifetime(TimeSpan.FromMinutes(10));
                 openIddict.SetRefreshTokenLifetime(TimeSpan.FromDays(30));
-                openIddict.UseClientCertificateBoundRefreshTokens();
                 openIddict.RequireProofKeyForCodeExchange();
                 openIddict.RegisterScopes(
                     "davebrain.read",
@@ -93,30 +93,10 @@ public static class DaveIdentityServiceCollectionExtensions
                     "davebrain.ear.enroll",
                     "davebrain.ear.command");
                 ConfigureTokenCertificates(openIddict, options);
+                openIddict.RemoveEventHandler(
+                    OpenIddict.Server.OpenIddictServerHandlers.ValidateClientCertificate.Descriptor);
                 openIddict.AddEventHandler<OpenIddict.Server.OpenIddictServerEvents.ProcessSignInContext>(
-                    builder => builder.UseInlineHandler(context =>
-                    {
-                        // Only a certificate-presented refresh can mint a DaveEar command token.
-                        if (!string.Equals(context.ClientId, "DaveEar", StringComparison.Ordinal) ||
-                            !string.Equals(
-                                context.Request.GrantType,
-                                OpenIddictConstants.GrantTypes.RefreshToken,
-                                StringComparison.Ordinal))
-                        {
-                            return default;
-                        }
-
-                        var certificate = context.Transaction.RemoteCertificate;
-                        if (certificate is null)
-                        {
-                            context.Reject(
-                                OpenIddictConstants.Errors.InvalidGrant,
-                                "A client certificate is required when refreshing DaveEar tokens.");
-                            return default;
-                        }
-
-                        return default;
-                    }));
+                    builder => builder.UseScopedHandler<DaveEarRefreshCertificateValidator>());
                 openIddict.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()
                     .EnableEndUserVerificationEndpointPassthrough();

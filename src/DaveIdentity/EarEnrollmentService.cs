@@ -67,6 +67,33 @@ public sealed class EarEnrollmentService(
                 ear.MtlsCertificateThumbprint);
     }
 
+    public async Task<bool> IsBoundCertificateForOAuthSubjectAsync(
+        string clientId,
+        string subject,
+        X509Certificate2 certificate,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subject);
+        ArgumentNullException.ThrowIfNull(certificate);
+
+        foreach (var ear in GetEars())
+        {
+            if (!string.Equals(ear.OAuthClientId, clientId, StringComparison.Ordinal) ||
+                !string.Equals(ear.OAuthSubject, subject, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (await IsBoundCertificateAsync(ear.Id, certificate, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public IReadOnlyList<EarRecord> GetEars() => stateStore.GetEars();
 
     public async Task RecordHeartbeatAsync(Guid earId, CancellationToken cancellationToken = default)

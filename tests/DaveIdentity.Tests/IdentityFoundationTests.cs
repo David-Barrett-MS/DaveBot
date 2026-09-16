@@ -119,6 +119,14 @@ public sealed class IdentityFoundationTests : IDisposable
         Assert.Contains(usages.Cast<Oid>(), usage => usage.Value == "1.3.6.1.5.5.7.3.2");
         Assert.Equal("https://brain.daves.tips", result.Ear.OAuthIssuer);
         Assert.True(await enrollment.IsBoundCertificateAsync(result.Ear.Id, certificate));
+        Assert.True(await enrollment.IsBoundCertificateForOAuthSubjectAsync(
+            "DaveEar",
+            "administrator-subject",
+            certificate));
+        Assert.False(await enrollment.IsBoundCertificateForOAuthSubjectAsync(
+            "DaveEar",
+            "another-subject",
+            certificate));
         Assert.DoesNotContain("PRIVATE KEY", result.CertificatePem, StringComparison.Ordinal);
     }
 

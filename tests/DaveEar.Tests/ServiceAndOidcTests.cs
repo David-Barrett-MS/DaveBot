@@ -147,6 +147,8 @@ public sealed class ServiceAndOidcTests
             _ => new HttpClient(new StubHandler(request =>
             {
                 refreshUri = request.RequestUri;
+                var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                Assert.Contains("scope=offline_access+davebrain.ear.command", body);
                 return Json("""{"access_token":"access","refresh_token":"new-refresh","expires_in":600}""");
             })));
         var credentials = new RecordingCredentialStore();

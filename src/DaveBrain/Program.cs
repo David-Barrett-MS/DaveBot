@@ -66,6 +66,8 @@ builder.Services.AddSingleton<ICommandAuditStore, InMemoryCommandAuditStore>();
 builder.Services.AddSingleton<ISpeechCommandAuditStore, InMemorySpeechCommandAuditStore>();
 builder.Services.AddSingleton<IAutomationAuditStore, InMemoryAutomationAuditStore>();
 builder.Services.AddSingleton<AdminSessionDebugLog>();
+builder.Services.AddSingleton<DaveEarActivityLog>();
+builder.Services.AddHostedService<DaveEarActivityMonitor>();
 builder.Services.AddTransient<AdminSessionDebugHttpMessageHandler>();
 builder.Services.AddSingleton<AutomationConfigurationService>();
 builder.Services.AddSingleton<IAutomationEngine, AutomationEngine>();
@@ -311,6 +313,7 @@ app.MapPost(
         ClaimsPrincipal user,
         LocalUserService users,
         EarEnrollmentService enrollment,
+        DaveEarActivityLog earActivity,
         DaveIdentityOptions identityOptions,
         CancellationToken cancellationToken) =>
     {
@@ -329,6 +332,7 @@ app.MapPost(
             subject,
             request.CertificateSigningRequestPem,
             cancellationToken);
+        earActivity.RecordRegistered(result.Ear);
         return Results.Created(
             $"/api/v1/ears/{result.Ear.Id}",
             new { earId = result.Ear.Id, certificate = result.CertificatePem, issuer = identityOptions.Issuer });
@@ -347,6 +351,7 @@ app.MapPost(
         MtlsCertificateBindingValidator certificateBinding,
         DaveIdentityOptions identityOptions,
         ICommandProcessor commandProcessor,
+        DaveEarActivityLog earActivity,
         CancellationToken cancellationToken) =>
     {
         if (request.EarId == Guid.Empty || !user.HasScope("davebrain.ear.command"))
@@ -368,6 +373,8 @@ app.MapPost(
             return Results.Forbid();
         }
 
+        earActivity.RecordConnected(ear);
+        earActivity.RecordCommandReceived(ear, request.Transcript);
         var result = await commandProcessor.ProcessAsync(
             request.Transcript,
             new CommandSource($"ear:{ear.Id}", ear.LocationId),
@@ -388,6 +395,7 @@ app.MapPost(
         MtlsCertificateBindingValidator certificateBinding,
         DaveIdentityOptions identityOptions,
         EarEnrollmentService enrollment,
+        DaveEarActivityLog earActivity,
         CancellationToken cancellationToken) =>
     {
         if (!user.HasScope("davebrain.ear.command"))
@@ -410,6 +418,7 @@ app.MapPost(
         }
 
         await enrollment.RecordHeartbeatAsync(earId, cancellationToken);
+        earActivity.RecordConnected(ear);
         return Results.Ok(new { enabled = ear.Enabled });
     })
     .RequireAuthorization(new AuthorizeAttribute
@@ -429,6 +438,7 @@ app.MapPost(
         SpeechTranscriptionQueue transcriptionQueue,
         ICommandProcessor commandProcessor,
         ISpeechCommandAuditStore speechAudit,
+        DaveEarActivityLog earActivity,
         CancellationToken cancellationToken) =>
     {
         if (!httpContext.Request.HasFormContentType)
@@ -483,6 +493,7 @@ app.MapPost(
             return Results.Forbid();
         }
 
+        earActivity.RecordConnected(ear);
         Task AuditAsync(SpeechCommandResponse response) =>
             speechAudit.WriteAsync(
                 new SpeechCommandAuditEntry(
@@ -567,8 +578,12 @@ app.MapPost(
                 statusCode: SpeechCommandHttp.ToHttpStatus(transcription.Status));
         }
 
+        var transcript = transcription.Transcript
+            ?? throw new InvalidOperationException(
+                "A successful transcription did not include a transcript.");
+        earActivity.RecordCommandReceived(ear, transcript);
         var command = await commandProcessor.ProcessAsync(
-            transcription.Transcript,
+            transcript,
             new CommandSource($"ear:{ear.Id}", ear.LocationId),
             cancellationToken);
         var completed = new SpeechCommandResponse(
