@@ -3,6 +3,10 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.Claims;
 using DaveIdentity;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using OpenIddict.Abstractions;
 
 namespace DaveIdentity.Tests;
 
@@ -163,6 +167,71 @@ public sealed class IdentityFoundationTests : IDisposable
         Assert.False(await validator.IsValidAsync(enrolled.Ear.Id, principal, certificate));
     }
 
+    [Fact]
+    public async Task ProtocolStorePersistsOpenIddictApplicationsAcrossServiceRestarts()
+    {
+        var statePath = Path.Combine(_directory, "identity.json");
+
+        using (var provider = CreateIdentityProvider(statePath))
+        using (var scope = provider.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<DaveIdentityProtocolDbContext>();
+            await database.Database.EnsureCreatedAsync();
+            await scope.ServiceProvider.GetRequiredService<OpenIddictProtocolInitializer>().InitializeAsync();
+        }
+
+        using (var provider = CreateIdentityProvider(statePath))
+        using (var scope = provider.CreateScope())
+        {
+            var database = scope.ServiceProvider.GetRequiredService<DaveIdentityProtocolDbContext>();
+            await database.Database.EnsureCreatedAsync();
+            var applications = scope.ServiceProvider.GetRequiredService<IOpenIddictApplicationManager>();
+
+            Assert.NotNull(await applications.FindByClientIdAsync("DaveEar"));
+        }
+    }
+
+    [Fact]
+    public async Task DeletingEarRemovesItsCertificateBinding()
+    {
+        var persistence = new JsonSnapshotIdentityPersistence(Path.Combine(_directory, "identity.json"));
+        var stateStore = new IdentityStateStore(persistence);
+        await stateStore.InitializeAsync();
+        var authority = EarCertificateAuthority.CreateEphemeralForDevelopment();
+        var enrollment = new EarEnrollmentService(stateStore, authority);
+        using var earKey = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=Obsolete Ear",
+            earKey,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        var enrolled = await enrollment.EnrollAsync(
+            "Obsolete Ear",
+            Guid.NewGuid(),
+            "https://brain.daves.tips",
+            "administrator-subject",
+            request.CreateSigningRequestPem());
+        using var certificate = X509Certificate2.CreateFromPem(enrolled.CertificatePem);
+
+        var deleted = await enrollment.DeleteAsync(enrolled.Ear.Id);
+
+        Assert.Equal(enrolled.Ear.Id, deleted.Id);
+        Assert.Empty(enrollment.GetEars());
+        Assert.False(await enrollment.IsBoundCertificateAsync(enrolled.Ear.Id, certificate));
+    }
+
+    private static ServiceProvider CreateIdentityProvider(string statePath)
+    {
+        var services = new ServiceCollection();
+        services.AddDaveIdentity(new DaveIdentityOptions
+        {
+            Issuer = new Uri("https://brain.example.test"),
+            StatePath = statePath,
+            AllowEphemeralCertificates = true,
+        });
+        return services.BuildServiceProvider();
+    }
+
     private async Task<LocalUserService> CreateUserServiceAsync()
     {
         var persistence = new JsonSnapshotIdentityPersistence(Path.Combine(_directory, "identity.json"));
@@ -175,6 +244,7 @@ public sealed class IdentityFoundationTests : IDisposable
 
     public void Dispose()
     {
+        SqliteConnection.ClearAllPools();
         if (Directory.Exists(_directory))
         {
             Directory.Delete(_directory, recursive: true);

@@ -42,6 +42,15 @@ public sealed class DaveEarActivityLog
         Write("Command received", ear, command);
     }
 
+    public void RecordDeleted(EarRecord ear)
+    {
+        lock (gate)
+        {
+            connectedEars.Remove(ear.Id);
+            WriteUnsafe("Deleted", ear, "Registration permanently removed by an administrator.");
+        }
+    }
+
     public void RecordDisconnectedEars(DateTimeOffset now)
     {
         lock (gate)

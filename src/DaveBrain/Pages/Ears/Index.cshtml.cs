@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 namespace DaveBrain.Pages.Ears;
 
 [Authorize(Policy = DaveIdentityPolicies.EarManagement)]
-public sealed class IndexModel(EarEnrollmentService enrollmentService) : PageModel
+public sealed class IndexModel(
+    EarEnrollmentService enrollmentService,
+    DaveEarActivityLog activityLog) : PageModel
 {
     public IReadOnlyList<EarRecord> Ears { get; private set; } = Array.Empty<EarRecord>();
 
@@ -17,6 +19,23 @@ public sealed class IndexModel(EarEnrollmentService enrollmentService) : PageMod
         try
         {
             await enrollmentService.RevokeAsync(id, cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            ModelState.AddModelError(string.Empty, exception.Message);
+            LoadEars();
+            return Page();
+        }
+
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostDeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await enrollmentService.DeleteAsync(id, cancellationToken);
+            activityLog.RecordDeleted(deleted);
         }
         catch (InvalidOperationException exception)
         {

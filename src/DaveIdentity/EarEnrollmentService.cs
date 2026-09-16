@@ -124,6 +124,21 @@ public sealed class EarEnrollmentService(
         }, cancellationToken);
     }
 
+    public async Task<EarRecord> DeleteAsync(Guid earId, CancellationToken cancellationToken = default)
+    {
+        EarRecord? deleted = null;
+        await stateStore.UpdateAsync(document =>
+        {
+            deleted = document.Ears.SingleOrDefault(ear => ear.Id == earId)
+                ?? throw new InvalidOperationException("The Ear does not exist.");
+            return document with
+            {
+                Ears = document.Ears.Where(ear => ear.Id != earId).ToArray(),
+            };
+        }, cancellationToken);
+        return deleted!;
+    }
+
     public async Task<EarEnrollmentResult> RenewAsync(
         Guid earId,
         string certificateSigningRequestPem,

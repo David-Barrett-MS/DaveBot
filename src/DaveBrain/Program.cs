@@ -154,6 +154,28 @@ if (!app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
+app.Use(async (context, next) =>
+{
+    if (EarRequestAuthorization.IsMtlsListener(context, earMtlsPort) &&
+        context.Request.Path.StartsWithSegments("/api/v1"))
+    {
+        var endpoint = context.GetEndpoint()?.DisplayName ?? "no endpoint matched";
+        app.Logger.LogInformation(
+            "DaveEar mTLS request {Method} {Path} matched {Endpoint}.",
+            context.Request.Method,
+            context.Request.Path,
+            endpoint);
+        await next();
+        app.Logger.LogInformation(
+            "DaveEar mTLS response {Method} {Path}: HTTP {StatusCode}.",
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode);
+        return;
+    }
+
+    await next();
+});
 app.UseAuthentication();
 app.Use(async (context, next) =>
 {

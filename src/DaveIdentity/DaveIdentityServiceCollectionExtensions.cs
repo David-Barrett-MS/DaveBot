@@ -29,6 +29,7 @@ public static class DaveIdentityServiceCollectionExtensions
         DaveIdentityOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        SQLitePCL.Batteries_V2.Init();
         services.AddSingleton(options);
         services.AddSingleton<IIdentityStatePersistence>(
             _ => new JsonSnapshotIdentityPersistence(options.StatePath));
@@ -45,7 +46,10 @@ public static class DaveIdentityServiceCollectionExtensions
         services.AddSingleton<MtlsCertificateBindingValidator>();
         services.AddDbContext<DaveIdentityProtocolDbContext>(database =>
         {
-            database.UseInMemoryDatabase("DaveIdentityProtocol");
+            var databasePath = Path.ChangeExtension(options.StatePath, ".protocol.db");
+            Directory.CreateDirectory(Path.GetDirectoryName(databasePath)
+                ?? throw new InvalidOperationException("The identity state path must include a directory."));
+            database.UseSqlite($"Data Source={databasePath}");
             database.UseOpenIddict();
         });
         services.AddScoped<OpenIddictProtocolInitializer>();

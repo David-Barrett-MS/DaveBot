@@ -12,6 +12,7 @@
 | DaveEar mTLS HTTPS listener | TCP 8443 on the private LAN |
 | TLS | Self-signed `brain.daves.tips` certificate |
 | State path | `C:\ProgramData\DaveBot` |
+| OpenIddict protocol store | `C:\ProgramData\DaveBot\identity.protocol.db` |
 | Backup-package path | `C:\ProgramData\DaveBot\backups` |
 
 No DaveBrain endpoint is intended for public internet access. Configure private
@@ -43,6 +44,11 @@ Grant this identity:
 Do not run DaveBrain as LocalSystem, a personal administrator account, or a
 shared interactive account. Keep Foundry Local bound to loopback and grant the
 service only the local access it needs to call it.
+
+The OpenIddict protocol database persists device codes, authorizations, and
+refresh tokens. Include `identity.protocol.db` in the DaveBrain state backup;
+do not delete it during routine application deployments or DaveEars will need
+to enroll again.
 
 ## Local speech transcription
 

@@ -5,6 +5,7 @@
 }
 
 <h1>DaveEars</h1>
+<div asp-validation-summary="ModelOnly" class="text-danger"></div>
 @if (Model.Ears.Count == 0)
 {
     <p>No DaveEars are enrolled.</p>
@@ -12,12 +13,15 @@
 else
 {
     <table class="table">
-        <thead><tr><th>Name</th><th>Last seen</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Ear ID</th><th>Location</th><th>Registered</th><th>Last seen</th><th>Status</th><th></th></tr></thead>
         <tbody>
         @foreach (var ear in Model.Ears)
         {
             <tr>
                 <td>@ear.Name</td>
+                <td><code>@ear.Id</code></td>
+                <td><code>@ear.LocationId</code></td>
+                <td>@ear.CreatedUtc.ToString("u")</td>
                 <td>@ear.LastSeenUtc?.ToString("u")</td>
                 <td>@(ear.Enabled ? "Active" : "Revoked")</td>
                 <td>
@@ -28,6 +32,11 @@ else
                             <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
                         </form>
                     }
+                    <form method="post" asp-page-handler="Delete" class="d-inline">
+                        <input type="hidden" name="id" value="@ear.Id" />
+                        <button type="submit" class="btn btn-sm btn-outline-danger"
+                                title="Permanently removes this registration and requires the Ear to enroll again.">Delete</button>
+                    </form>
                 </td>
             </tr>
         }
