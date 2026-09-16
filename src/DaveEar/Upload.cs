@@ -17,8 +17,11 @@ public sealed class HttpCommandUploader(
     {
         try
         {
-            using var certificate = X509Certificate2.CreateFromPem(tokens.Credentials.CertificatePem, tokens.Credentials.PrivateKeyPem);
+            using var certificate = EarClientCertificateLoader.Load(
+                tokens.Credentials.CertificatePem,
+                tokens.Credentials.PrivateKeyPem);
             using var handler = new HttpClientHandler();
+            handler.ClientCertificateOptions = ClientCertificateOption.Manual;
             handler.ClientCertificates.Add(certificate);
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(45) };
             var token = await tokens.GetAsync(cancellationToken);
@@ -74,8 +77,11 @@ public sealed class HttpCommandUploader(
     {
         try
         {
-            using var certificate = X509Certificate2.CreateFromPem(tokens.Credentials.CertificatePem, tokens.Credentials.PrivateKeyPem);
+            using var certificate = EarClientCertificateLoader.Load(
+                tokens.Credentials.CertificatePem,
+                tokens.Credentials.PrivateKeyPem);
             using var handler = new HttpClientHandler();
+            handler.ClientCertificateOptions = ClientCertificateOption.Manual;
             handler.ClientCertificates.Add(certificate);
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
             using var request = new HttpRequestMessage(

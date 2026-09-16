@@ -105,7 +105,9 @@ public static class Program
         var credentials = await LoadCredentialsAsync(paths);
         using var discoveryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         var discovery = await new DaveEarEnrollmentClient(discoveryClient).DiscoverAsync(configuration.Issuer, CancellationToken.None);
-        using var certificate = X509Certificate2.CreateFromPem(credentials.CertificatePem, credentials.PrivateKeyPem);
+        using var certificate = EarClientCertificateLoader.Load(
+            credentials.CertificatePem,
+            credentials.PrivateKeyPem);
         if (certificate.NotAfter <= DateTime.UtcNow)
         {
             throw new InvalidOperationException("DaveEar client certificate has expired; re-enrollment is required.");

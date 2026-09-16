@@ -207,6 +207,7 @@ public sealed class MtlsAccessTokenProvider
             certificate =>
             {
                 var handler = new HttpClientHandler();
+                handler.ClientCertificateOptions = ClientCertificateOption.Manual;
                 handler.ClientCertificates.Add(certificate);
                 return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
             })
@@ -265,7 +266,9 @@ public sealed class MtlsAccessTokenProvider
                 return token;
             }
 
-            using var certificate = X509Certificate2.CreateFromPem(_credentials.CertificatePem, _credentials.PrivateKeyPem);
+            using var certificate = EarClientCertificateLoader.Load(
+                _credentials.CertificatePem,
+                _credentials.PrivateKeyPem);
             using var client = _createClient(certificate);
             using var response = await client.PostAsync(
                 new Uri(_configuration.EffectiveMtlsEndpoint, _discovery.TokenEndpoint.PathAndQuery),
