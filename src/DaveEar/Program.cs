@@ -25,12 +25,12 @@ public static class Program
         }
         catch (OperationCanceledException exception)
         {
-            Console.Error.WriteLine($"DaveEar: {exception.Message}");
+            WriteError(exception);
             return 1;
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"DaveEar: {exception.Message}");
+            WriteError(exception);
             return 1;
         }
     }
@@ -165,6 +165,15 @@ public static class Program
     private static async Task<EarCredentials> LoadCredentialsAsync(DaveEarPaths paths) =>
         await CredentialStoreFactory.Create(paths).LoadAsync()
         ?? throw new InvalidOperationException("DaveEar credentials are missing; re-enrollment is required.");
+
+    private static void WriteError(Exception exception)
+    {
+        Console.Error.WriteLine($"DaveEar: {exception.Message}");
+        for (var inner = exception.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            Console.Error.WriteLine($"DaveEar: {inner.GetType().Name}: {inner.Message}");
+        }
+    }
 
     private static Dictionary<string, string> ParseArguments(string[] args)
     {
