@@ -30,6 +30,7 @@ public sealed class FoundryLocalSdkTranscriptionService(
                     {
                         AppName = "DaveBrain",
                         DisableNonessentialTelemetry = true,
+                        LogLevel = Microsoft.AI.Foundry.Local.LogLevel.Information,
                     },
                     logger,
                     cancellationToken);
@@ -47,6 +48,7 @@ public sealed class FoundryLocalSdkTranscriptionService(
             await speechModel.DownloadAsync(null, cancellationToken);
             await speechModel.LoadAsync(cancellationToken);
             Volatile.Write(ref model, speechModel);
+            logger.LogInformation("Foundry Local loaded speech model {ModelId}.", speechModel.Id);
         }
         finally
         {
@@ -108,10 +110,14 @@ public sealed class FoundryLocalSdkTranscriptionService(
             await using var session = audioClient.CreateLiveTranscriptionSession();
             session.Settings.SampleRate = 16_000;
             session.Settings.Channels = 1;
+            session.Settings.BitsPerSample = 16;
             session.Settings.Language = "en";
 
             stage = "starting the live transcription session";
             await session.StartAsync(CancellationToken.None).WaitAsync(timeout.Token);
+            logger.LogInformation(
+                "Foundry Local speech session started; PCM duration: {AudioDurationMilliseconds} ms.",
+                audio.Duration.TotalMilliseconds);
             var sessionStarted = true;
             var candidates = new List<string?>();
             var resultReader = Task.Run(async () =>
@@ -137,6 +143,9 @@ public sealed class FoundryLocalSdkTranscriptionService(
                 }
 
                 stage = "waiting for live transcription results";
+                logger.LogInformation(
+                    "Foundry Local speech session received {AppendedChunks} PCM chunks; finalization begins in 3 seconds.",
+                    appendedChunks);
                 await Task.Delay(TimeSpan.FromSeconds(3), timeout.Token);
             }
             finally
@@ -144,12 +153,17 @@ public sealed class FoundryLocalSdkTranscriptionService(
                 if (sessionStarted)
                 {
                     stage = "stopping the live transcription session";
+                    logger.LogInformation("Foundry Local speech session finalizing.");
                     await session.StopAsync(CancellationToken.None);
+                    logger.LogInformation("Foundry Local speech session finalized.");
                 }
             }
 
             stage = "completing the live transcription stream";
             await resultReader.WaitAsync(timeout.Token);
+            logger.LogInformation(
+                "Foundry Local speech stream completed with {FinalResultCount} final result(s).",
+                candidates.Count);
             var transcript = CombineTranscriptCandidates(candidates);
             if (string.IsNullOrEmpty(transcript))
             {
