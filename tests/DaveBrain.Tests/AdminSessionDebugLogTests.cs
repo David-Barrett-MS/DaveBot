@@ -114,7 +114,8 @@ public sealed class AdminSessionDebugLogTests
         var entries = log.Read();
         Assert.Equal(["Registered", "Connected", "Command received", "Disconnected"],
             entries.Select(entry => entry.Event));
-        Assert.Contains("kitchen lights", entries[2].Details, StringComparison.Ordinal);
+        Assert.Equal("Speech command transcribed.", entries[2].Details);
+        Assert.Equal("turn on the kitchen lights", entries[2].Transcript);
     }
 
     private sealed class ImageResponseHandler : HttpMessageHandler

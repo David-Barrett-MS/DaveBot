@@ -10,6 +10,8 @@ public sealed class HttpCommandUploader(
     MtlsAccessTokenProvider tokens,
     Action<string>? verbose = null) : ICommandUploader
 {
+    private static readonly TimeSpan SpeechUploadTimeout = TimeSpan.FromSeconds(75);
+
     public async Task<UploadResult> UploadAsync(
         Guid earId,
         Guid segmentId,
@@ -25,7 +27,7 @@ public sealed class HttpCommandUploader(
             using var handler = new HttpClientHandler { AllowAutoRedirect = false };
             handler.ClientCertificateOptions = ClientCertificateOption.Manual;
             handler.ClientCertificates.Add(certificate);
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(45) };
+            using var client = new HttpClient(handler) { Timeout = SpeechUploadTimeout };
             var token = await tokens.GetAsync(cancellationToken);
             using var form = new MultipartFormDataContent();
             form.Add(new StringContent(earId.ToString()), "earId");

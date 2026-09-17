@@ -22,4 +22,11 @@
     <ProjectReference Include="..\..\src\DaveBrain\DaveBrain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\Sample Speech\Turn Lounge Lights On.wav"
+             Link="Sample Speech\Turn Lounge Lights On.wav">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

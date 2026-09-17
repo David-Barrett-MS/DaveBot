@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Threading.Channels;
 
 namespace DaveBrain;
@@ -19,11 +20,11 @@ public sealed record SpeechTranscriptionOptions(
         var section = configuration.GetSection("DaveBot:SpeechTranscription");
         return new SpeechTranscriptionOptions(
             section["Model"] ?? NemotronSpeechStreamingEnglishModel,
-            TimeSpan.FromSeconds(section.GetValue("TimeoutSeconds", 20)),
+            TimeSpan.FromSeconds(section.GetValue("TimeoutSeconds", 60)),
             section.GetValue("MaximumRequestBytes", 1_000_000),
             TimeSpan.FromSeconds(section.GetValue("MaximumDurationSeconds", 30)),
             section.GetValue("QueueCapacity", 2),
-            TimeSpan.FromSeconds(section.GetValue("QueueWaitTimeoutSeconds", 25)));
+            TimeSpan.FromSeconds(section.GetValue("QueueWaitTimeoutSeconds", 65)));
     }
 
     public void Validate()
@@ -227,7 +228,8 @@ public sealed record SpeechQueueResult(
 
 public sealed class SpeechTranscriptionQueue(
     ITranscriptionService transcriptionService,
-    SpeechTranscriptionOptions options) : BackgroundService
+    SpeechTranscriptionOptions options,
+    ILogger<SpeechTranscriptionQueue> logger) : BackgroundService
 {
     private readonly Channel<QueuedSpeech> _queue = Channel.CreateBounded<QueuedSpeech>(
         new BoundedChannelOptions(options.QueueCapacity)
@@ -249,6 +251,10 @@ public sealed class SpeechTranscriptionQueue(
             return new SpeechQueueResult(SpeechQueueStatus.Overloaded, correlationId);
         }
 
+        logger.LogInformation(
+            "Speech transcription {CorrelationId} queued with {AudioBytes} audio bytes.",
+            correlationId,
+            audio.Length);
         try
         {
             return new SpeechQueueResult(
@@ -293,10 +299,15 @@ public sealed class SpeechTranscriptionQueue(
     {
         if (queued.RequestCancellation.IsCancellationRequested)
         {
+            logger.LogInformation(
+                "Speech transcription {CorrelationId} was canceled before processing.",
+                queued.CorrelationId);
             queued.Completion.TrySetResult(new TranscriptionResult(TranscriptionStatus.Canceled));
             return;
         }
 
+        var elapsed = Stopwatch.StartNew();
+        logger.LogInformation("Speech transcription {CorrelationId} started.", queued.CorrelationId);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
             stoppingToken,
             queued.RequestCancellation);
@@ -326,6 +337,11 @@ public sealed class SpeechTranscriptionQueue(
         }
 
         queued.Completion.TrySetResult(result);
+        logger.LogInformation(
+            "Speech transcription {CorrelationId} completed with {Status} after {ElapsedMilliseconds} ms.",
+            queued.CorrelationId,
+            result.Status,
+            elapsed.ElapsedMilliseconds);
     }
 
     public override Task StopAsync(CancellationToken cancellationToken)

@@ -215,6 +215,56 @@ public sealed class FoundryLocalServiceTests
     }
 }
 
+[Trait("Category", "FoundryIntegration")]
+public sealed class FoundryLocalSdkTranscriptionIntegrationTests
+{
+    [Fact]
+    public async Task SuppliedSpeechFixtureTranscribesTheCompleteCommand()
+    {
+        var options = new SpeechTranscriptionOptions(
+            SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
+            TimeSpan.FromSeconds(60),
+            1_000_000,
+            TimeSpan.FromSeconds(30),
+            2,
+            TimeSpan.FromSeconds(65));
+        var service = new FoundryLocalSdkTranscriptionService(
+            options,
+            new WavAudioValidator(options),
+            NullLogger<FoundryLocalSdkTranscriptionService>.Instance);
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "Sample Speech",
+            "Turn Lounge Lights On.wav");
+        var wavAudio = await File.ReadAllBytesAsync(fixturePath);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+
+        try
+        {
+            await service.InitializeAsync(timeout.Token);
+            var result = await service.TranscribeAsync(wavAudio, timeout.Token);
+
+            Assert.Equal(TranscriptionStatus.Succeeded, result.Status);
+            Assert.Equal("turn lounge lights on", NormalizeTranscript(result.Transcript));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static string NormalizeTranscript(string? transcript) =>
+        string.Join(
+            ' ',
+            new string(
+                (transcript ?? string.Empty)
+                    .Select(character => char.IsLetterOrDigit(character)
+                        ? char.ToLowerInvariant(character)
+                        : ' ')
+                    .ToArray())
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+}
+
 public sealed class SpeechTranscriptionQueueTests
 {
     [Fact]
@@ -294,7 +344,8 @@ public sealed class SpeechTranscriptionQueueTests
                 1_000_000,
                 TimeSpan.FromSeconds(30),
                 capacity,
-                waitTimeout ?? TimeSpan.FromSeconds(10)));
+                waitTimeout ?? TimeSpan.FromSeconds(10)),
+            NullLogger<SpeechTranscriptionQueue>.Instance);
 
     private sealed class RecordingCommandProcessor : ICommandProcessor
     {

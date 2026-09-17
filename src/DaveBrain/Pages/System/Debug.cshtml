@@ -35,7 +35,7 @@ else
 {
     <div class="table-responsive">
     <table class="table debug-log">
-        <thead><tr><th>Time (UTC)</th><th>Event</th><th>Ear</th><th>Details</th></tr></thead>
+        <thead><tr><th>Time (UTC)</th><th>Event</th><th>Ear</th><th>Details</th><th>Transcript</th></tr></thead>
         <tbody>
         @foreach (var entry in Model.EarActivities)
         {
@@ -44,6 +44,12 @@ else
                 <td>@entry.Event</td>
                 <td>@entry.EarName<br /><small>@entry.EarId</small></td>
                 <td><pre class="mb-0">@entry.Details</pre></td>
+                <td>
+                    @if (entry.Transcript is not null)
+                    {
+                        <pre class="mb-0">@entry.Transcript</pre>
+                    }
+                </td>
             </tr>
         }
         </tbody>

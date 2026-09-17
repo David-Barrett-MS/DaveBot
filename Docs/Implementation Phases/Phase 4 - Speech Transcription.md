@@ -23,8 +23,9 @@ the command processor and its responses remain custom deterministic code.
    native SDK implementation and deterministic fake test implementation.
 2. Initialize Foundry Local in process, download/load only
    `nemotron-speech-streaming-en-0.6b`, and
-   pass the validated WAV's raw PCM payload to an `AudioSession` through an
-   in-memory `ItemQueue` in 100 ms chunks.
+   pass the validated WAV's raw PCM payload to the SDK's live-transcription
+   session in 100 ms chunks, accepting only final results from its in-memory
+   stream.
 3. Explicitly select Nemotron Speech; never fall back to a cloud service or a
    different local model without an explicit configuration change.
 4. Make readiness fail with a clear dependency result when the packaged SDK or
@@ -49,8 +50,9 @@ the command processor and its responses remain custom deterministic code.
 1. Pass successful transcript text directly to `CommandProcessor`.
 2. Return one correlated response covering transcription, parsed command,
    resolved targets, and action result.
-3. Record safe metadata and outcome in the bounded audit store without raw
-   audio or OAuth material.
+3. Record a completed transcript in the administrator-only DaveEar Debug UI
+   activity log, with safe metadata and outcome but without raw audio or OAuth
+   material.
 4. Distinguish no speech/transcription failure from a successfully transcribed
    command that cannot be resolved.
 
@@ -82,7 +84,7 @@ upload/duration limits, and queue bounds. The only accepted model value is
 Local SDK through NuGet, so it does not require a Foundry CLI, loopback HTTP
 endpoint, or separate daemon. On its first start, the SDK downloads the model
 to the DaveBrain service account's model cache. Defaults are a 1 MB upload,
-30-second WAV, 20-second Foundry timeout, and one worker with two queued
+30-second WAV, 60-second Foundry timeout, and one worker with two queued
 requests.
 
 `POST /api/v1/speech-commands` accepts `multipart/form-data` with `audio`

@@ -67,8 +67,14 @@ continues serving its administrative UI; `/health` and speech requests return
 a safe 503 dependency result until it is available. `/health/live` only
 reports whether DaveBrain is running. Audio is held only in the bounded
 in-memory queue for the request. Its validated raw PCM payload is passed to
-the SDK's `AudioSession` through an in-memory `ItemQueue` in 100 ms chunks;
-audio is never written to temporary storage or otherwise persisted.
+the SDK's live-transcription session in 100 ms chunks and final results are
+read from its in-memory stream; incremental token fragments are not accepted
+as commands. Audio is never written to temporary storage or otherwise
+persisted.
+
+Foundry inference allows 60 seconds, with a 65-second server queue-processing
+budget. DaveEar allows 75 seconds for its speech upload so it does not abandon
+a valid request before DaveBrain can return a result.
 
 ## Self-signed certificate
 

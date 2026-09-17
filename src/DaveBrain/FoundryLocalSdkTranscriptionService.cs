@@ -1,4 +1,5 @@
 using Microsoft.AI.Foundry.Local;
+using System.Diagnostics;
 
 namespace DaveBrain;
 
@@ -34,7 +35,9 @@ public sealed class FoundryLocalSdkTranscriptionService(
                     cancellationToken);
             }
 
-            var catalog = await FoundryLocalManager.Instance.GetCatalogAsync(cancellationToken);
+            var foundry = FoundryLocalManager.Instance;
+            await foundry.DownloadAndRegisterEpsAsync().WaitAsync(cancellationToken);
+            var catalog = await foundry.GetCatalogAsync(cancellationToken);
             var speechModel = await catalog.GetModelAsync(
                 options.Model,
                 cancellationToken)
@@ -93,35 +96,61 @@ public sealed class FoundryLocalSdkTranscriptionService(
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(options.Timeout);
+        var elapsed = Stopwatch.StartNew();
+        var stage = "creating the live transcription session";
+        var appendedChunks = 0;
         try
         {
-            using var session = new AudioSession(loadedModel);
-            using var request = new Request();
-            request.AddItem(AudioItem.CreateFormatDescriptor("pcm", 16_000, 1), takeOwnership: true);
-            using var audioQueue = new ItemQueue();
-            request.AddItem(audioQueue, takeOwnership: false);
-            var responseTask = session.ProcessRequestAsync(request, timeout.Token);
+            // The native AudioSession streaming API can crash the process when canceled in 2.0.1.
+#pragma warning disable CS0618
+            var audioClient = await loadedModel.GetAudioClientAsync().WaitAsync(timeout.Token);
+#pragma warning restore CS0618
+            await using var session = audioClient.CreateLiveTranscriptionSession();
+            session.Settings.SampleRate = 16_000;
+            session.Settings.Channels = 1;
+            session.Settings.Language = "en";
+
+            stage = "starting the live transcription session";
+            await session.StartAsync(CancellationToken.None).WaitAsync(timeout.Token);
+            var sessionStarted = true;
+            var candidates = new List<string?>();
+            var resultReader = Task.Run(async () =>
+            {
+                await foreach (var result in session.GetStream(CancellationToken.None))
+                {
+                    if (result.IsFinal)
+                    {
+                        candidates.Add(result.Content?.FirstOrDefault()?.Text);
+                    }
+                }
+            });
+
             try
             {
+                stage = "appending PCM audio";
                 foreach (var pcmChunk in SplitPcmForStreaming(pcmAudio))
                 {
-                    PushAudioChunk(audioQueue, pcmChunk);
+                    await session.AppendAsync(pcmChunk, CancellationToken.None).AsTask()
+                        .WaitAsync(timeout.Token);
+                    appendedChunks++;
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), timeout.Token);
                 }
+
+                stage = "waiting for live transcription results";
+                await Task.Delay(TimeSpan.FromSeconds(3), timeout.Token);
             }
             finally
             {
-                audioQueue.MarkFinished();
+                if (sessionStarted)
+                {
+                    stage = "stopping the live transcription session";
+                    await session.StopAsync(CancellationToken.None);
+                }
             }
 
-            using var response = await responseTask;
-            var transcript = CombineTranscriptCandidates(Enumerable.Range(0, response.ItemCount)
-                .Select(response.GetItem)
-                .Select(item => item switch
-                {
-                    SpeechResultItem speechResult => speechResult.Text,
-                    TextItem textResult => textResult.Text,
-                    _ => null,
-                }));
+            stage = "completing the live transcription stream";
+            await resultReader.WaitAsync(timeout.Token);
+            var transcript = CombineTranscriptCandidates(candidates);
             if (string.IsNullOrEmpty(transcript))
             {
                 logger.LogWarning("Foundry Local returned no speech result.");
@@ -137,6 +166,13 @@ public sealed class FoundryLocalSdkTranscriptionService(
         }
         catch (OperationCanceledException)
         {
+            logger.LogWarning(
+                "Foundry Local transcription timed out after {ElapsedMilliseconds} ms while {Stage}; " +
+                "PCM duration: {AudioDurationMilliseconds} ms; chunks appended: {AppendedChunks}.",
+                elapsed.ElapsedMilliseconds,
+                stage,
+                audio.Duration.TotalMilliseconds,
+                appendedChunks);
             return new TranscriptionResult(TranscriptionStatus.TimedOut);
         }
         catch (FoundryLocalException exception)
@@ -195,20 +231,6 @@ public sealed class FoundryLocalSdkTranscriptionService(
         for (var offset = 0; offset < pcmAudio.Length; offset += PcmChunkBytes)
         {
             yield return pcmAudio.Slice(offset, Math.Min(PcmChunkBytes, pcmAudio.Length - offset));
-        }
-    }
-
-    private static void PushAudioChunk(ItemQueue audioQueue, ReadOnlyMemory<byte> pcmChunk)
-    {
-        var audioItem = BytesItem.CreateOwned(pcmChunk);
-        try
-        {
-            audioQueue.Push(audioItem);
-        }
-        catch
-        {
-            audioItem.Dispose();
-            throw;
         }
     }
 

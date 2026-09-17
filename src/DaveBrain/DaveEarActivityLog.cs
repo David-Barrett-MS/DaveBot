@@ -9,7 +9,8 @@ public sealed record DaveEarActivityEntry(
     string Event,
     Guid EarId,
     string EarName,
-    string Details);
+    string Details,
+    string? Transcript = null);
 
 public sealed class DaveEarActivityLog
 {
@@ -39,7 +40,7 @@ public sealed class DaveEarActivityLog
     public void RecordCommandReceived(EarRecord ear, string command)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(command);
-        Write("Command received", ear, command);
+        Write("Command received", ear, "Speech command transcribed.", command);
     }
 
     public void RecordDeleted(EarRecord ear)
@@ -76,15 +77,15 @@ public sealed class DaveEarActivityLog
         }
     }
 
-    private void Write(string @event, EarRecord ear, string details)
+    private void Write(string @event, EarRecord ear, string details, string? transcript = null)
     {
         lock (gate)
         {
-            WriteUnsafe(@event, ear, details);
+            WriteUnsafe(@event, ear, details, transcript);
         }
     }
 
-    private void WriteUnsafe(string @event, EarRecord ear, string details)
+    private void WriteUnsafe(string @event, EarRecord ear, string details, string? transcript = null)
     {
         entries.Enqueue(new DaveEarActivityEntry(
             ++sequence,
@@ -92,12 +93,16 @@ public sealed class DaveEarActivityLog
             @event,
             ear.Id,
             ear.Name,
-            details.Length <= 4_096 ? details : details[..4_096] + "\n[truncated]"));
+            Truncate(details),
+            transcript is null ? null : Truncate(transcript)));
         while (entries.Count > MaximumEntries)
         {
             entries.Dequeue();
         }
     }
+
+    private static string Truncate(string value) =>
+        value.Length <= 4_096 ? value : value[..4_096] + "\n[truncated]";
 
     private sealed record ConnectedEar(EarRecord Ear, DateTimeOffset LastActivityUtc);
 }
