@@ -43,6 +43,12 @@ public sealed class DaveEarActivityLog
         Write("Command received", ear, "Speech command transcribed.", command);
     }
 
+    public void RecordSpeechUploadReceived(EarRecord ear, Guid? segmentId) =>
+        Write(
+            "Speech upload received",
+            ear,
+            segmentId is null ? "Segment ID was not supplied." : $"Segment: {segmentId:D}");
+
     public void RecordDeleted(EarRecord ear)
     {
         lock (gate)

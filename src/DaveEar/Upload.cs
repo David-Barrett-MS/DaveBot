@@ -43,7 +43,17 @@ public sealed class HttpCommandUploader(
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             Trace($"Speech upload: POST {request.RequestUri}.");
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var responseTask = client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            if (await Task.WhenAny(
+                    responseTask,
+                    Task.Delay(TimeSpan.FromSeconds(10), cancellationToken)) != responseTask)
+            {
+                Trace("Speech upload: awaiting server response after 10 seconds.");
+            }
+            using var response = await responseTask;
             Trace($"Speech upload: received HTTP {(int)response.StatusCode}.");
             if (response.IsSuccessStatusCode)
             {

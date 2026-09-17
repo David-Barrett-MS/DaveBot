@@ -81,6 +81,9 @@ a valid request before DaveBrain can return a result.
 Run DaveEar with `--verbose` when diagnosing speech delivery. Each captured
 segment should produce `Encoding complete`, `Sending segment`, `Speech upload:
 POST`, `Speech upload: received HTTP`, and `Segment ... completed` messages.
+If no response has arrived after ten seconds, DaveEar reports that wait once.
+DaveBrain's administrator-only Debug UI records `Speech upload received` after
+mTLS authorization, followed by a completed-command row with its transcript.
 If a heartbeat, spool, encoder, or uploader operation fails unexpectedly, the
 upload worker logs the exception type, retains queued segments, and retries in
 five seconds rather than silently stopping.

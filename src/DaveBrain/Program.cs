@@ -527,6 +527,9 @@ app.MapPost(
         }
 
         earActivity.RecordConnected(ear);
+        earActivity.RecordSpeechUploadReceived(
+            ear,
+            Guid.TryParse(form["segmentId"], out var segmentId) ? segmentId : null);
         Task AuditAsync(SpeechCommandResponse response) =>
             speechAudit.WriteAsync(
                 new SpeechCommandAuditEntry(

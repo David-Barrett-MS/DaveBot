@@ -108,14 +108,17 @@ public sealed class AdminSessionDebugLogTests
         log.RecordRegistered(ear);
         log.RecordConnected(ear);
         log.RecordConnected(ear);
+        log.RecordSpeechUploadReceived(ear, Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
         log.RecordCommandReceived(ear, "turn on the kitchen lights");
         log.RecordDisconnectedEars(DateTimeOffset.UtcNow.AddMinutes(3));
 
         var entries = log.Read();
-        Assert.Equal(["Registered", "Connected", "Command received", "Disconnected"],
+        Assert.Equal(["Registered", "Connected", "Speech upload received", "Command received", "Disconnected"],
             entries.Select(entry => entry.Event));
-        Assert.Equal("Speech command transcribed.", entries[2].Details);
-        Assert.Equal("turn on the kitchen lights", entries[2].Transcript);
+        Assert.Equal("Segment: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", entries[2].Details);
+        Assert.Null(entries[2].Transcript);
+        Assert.Equal("Speech command transcribed.", entries[3].Details);
+        Assert.Equal("turn on the kitchen lights", entries[3].Transcript);
     }
 
     private sealed class ImageResponseHandler : HttpMessageHandler
