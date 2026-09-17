@@ -14,6 +14,8 @@ public sealed class DaveEarService(
     Action<object>? statusChanged = null,
     Action<string>? verbose = null)
 {
+    private static readonly TimeSpan UploadRecoveryDelay = TimeSpan.FromSeconds(5);
+
     private readonly Channel<AudioSegment> _segments = Channel.CreateBounded<AudioSegment>(
         new BoundedChannelOptions(configuration.QueueCapacity)
         {
@@ -136,36 +138,60 @@ public sealed class DaveEarService(
     private async Task UploadLoopAsync(Action<string> status, CancellationToken cancellationToken)
     {
         var nextHeartbeat = DateTimeOffset.UtcNow;
+        Trace("Upload worker started.");
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (DateTimeOffset.UtcNow >= nextHeartbeat)
+            try
             {
-                var heartbeat = await HeartbeatAsync(cancellationToken);
-                if (!heartbeat.IsEnabled)
+                if (DateTimeOffset.UtcNow >= nextHeartbeat)
                 {
-                    status($"Uploads stopped: {heartbeat.Code}.");
-                    return;
+                    var heartbeat = await HeartbeatAsync(cancellationToken);
+                    if (!heartbeat.IsEnabled)
+                    {
+                        status($"Uploads stopped: {heartbeat.Code}.");
+                        return;
+                    }
+                    nextHeartbeat = DateTimeOffset.UtcNow.AddMinutes(1);
                 }
-                nextHeartbeat = DateTimeOffset.UtcNow.AddMinutes(1);
-            }
 
-            foreach (var due in await spool.GetDueAsync(cancellationToken))
-            {
-                Trace($"Retrying queued segment {due.Item.SegmentId:D}, attempt {due.Item.Attempts + 1}.");
-                await HandleUploadAsync(due.Item.SegmentId, due.Wav, due.Item.Attempts, status, cancellationToken);
-            }
+                foreach (var due in await spool.GetDueAsync(cancellationToken))
+                {
+                    Trace($"Retrying queued segment {due.Item.SegmentId:D}, attempt {due.Item.Attempts + 1}.");
+                    await HandleUploadAsync(due.Item.SegmentId, due.Wav, due.Item.Attempts, status, cancellationToken);
+                }
 
-            if (_segments.Reader.TryRead(out var segment))
-            {
-                var wav = encoder.Encode(segment);
-                Trace($"Encoding complete for segment {segment.Id:D}: {wav.Length} bytes.");
-                await HandleUploadAsync(segment.Id, wav, 0, status, cancellationToken);
+                if (_segments.Reader.TryRead(out var segment))
+                {
+                    var wav = encoder.Encode(segment);
+                    Trace($"Encoding complete for segment {segment.Id:D}: {wav.Length} bytes.");
+                    await HandleUploadAsync(segment.Id, wav, 0, status, cancellationToken);
+                }
+                else
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                }
             }
-            else
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+                break;
+            }
+            catch (Exception exception)
+            {
+                LastStatus = $"upload-recovering:{exception.GetType().Name}";
+                PublishStatus();
+                status("Upload worker failed; retrying without discarding queued audio.");
+                Trace($"Upload worker failed with {exception.GetType().Name}: {exception.Message}");
+                try
+                {
+                    await Task.Delay(UploadRecoveryDelay, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
+        Trace("Upload worker stopped.");
     }
 
     private async Task HandleUploadAsync(

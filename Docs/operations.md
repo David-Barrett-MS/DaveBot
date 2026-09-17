@@ -76,6 +76,15 @@ Foundry inference allows 60 seconds, with a 65-second server queue-processing
 budget. DaveEar allows 75 seconds for its speech upload so it does not abandon
 a valid request before DaveBrain can return a result.
 
+## Diagnosing DaveEar uploads
+
+Run DaveEar with `--verbose` when diagnosing speech delivery. Each captured
+segment should produce `Encoding complete`, `Sending segment`, `Speech upload:
+POST`, `Speech upload: received HTTP`, and `Segment ... completed` messages.
+If a heartbeat, spool, encoder, or uploader operation fails unexpectedly, the
+upload worker logs the exception type, retains queued segments, and retries in
+five seconds rather than silently stopping.
+
 ## Self-signed certificate
 
 Create one self-signed certificate with `brain.daves.tips` in its DNS subject

@@ -229,6 +229,52 @@ public sealed class ServiceAndOidcTests
         }
     }
 
+    [Fact]
+    public async Task ServiceRecoversFromUploadWorkerFailureAndSendsCapturedSegment()
+    {
+        var root = Path.Combine(Directory.GetCurrentDirectory(), $"ear-test-{Guid.NewGuid():N}");
+        try
+        {
+            var configuration = Configuration();
+            var provider = new MtlsAccessTokenProvider(
+                configuration,
+                new EarCredentials("private", "certificate", "refresh"),
+                new OidcDiscovery(
+                    configuration.Issuer,
+                    new Uri("https://brain.example.test/device"),
+                    new Uri("https://brain.example.test/token")));
+            var uploader = new TransientHeartbeatUploader();
+            var trace = new List<string>();
+            var service = new DaveEarService(
+                configuration,
+                new OneSegmentCapture(),
+                new EnergyVoiceActivityDetector(configuration.EnergyThreshold),
+                new PcmWavEncoder(),
+                uploader,
+                new RetrySpool(new DaveEarPaths(root), configuration),
+                provider,
+                new MemoryCredentialStore(),
+                verbose: trace.Add);
+            using var cancellation = new CancellationTokenSource();
+
+            var run = service.RunAsync(_ => { }, cancellation.Token);
+            await uploader.Uploaded.Task.WaitAsync(TimeSpan.FromSeconds(7));
+            cancellation.Cancel();
+            await run;
+
+            Assert.Equal(2, uploader.HeartbeatAttempts);
+            Assert.Equal(1, service.AcceptedSegments);
+            Assert.Contains(trace, entry => entry.StartsWith(
+                "Upload worker failed with HttpRequestException", StringComparison.Ordinal));
+            Assert.Contains(trace, entry => entry.StartsWith(
+                "Encoding complete for segment ", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static DaveEarConfiguration Configuration() =>
         DaveEarConfiguration.Create(new Uri("https://brain.example.test"), "test", Guid.NewGuid(), Guid.NewGuid());
 
@@ -252,10 +298,59 @@ public sealed class ServiceAndOidcTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    private sealed class OneSegmentCapture : IAudioCapture
+    {
+        public async IAsyncEnumerable<AudioFrame> CaptureAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var capturedUtc = DateTimeOffset.UtcNow;
+            yield return new AudioFrame(Enumerable.Repeat(0.1f, 1_600).ToArray(), 16_000, capturedUtc);
+            for (var frame = 1; frame <= 10; frame++)
+            {
+                yield return new AudioFrame(new float[1_600], 16_000, capturedUtc.AddMilliseconds(frame * 100));
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        public Task<AudioCaptureDiagnostic> DiagnoseAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new AudioCaptureDiagnostic(true, "test"));
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private sealed class ResultUploader(UploadResult result) : ICommandUploader
     {
         public Task<UploadResult> UploadAsync(Guid earId, Guid segmentId, ReadOnlyMemory<byte> wav, CancellationToken cancellationToken) => Task.FromResult(result);
         public Task<HeartbeatResult> HeartbeatAsync(Guid earId, CancellationToken cancellationToken) => Task.FromResult(new HeartbeatResult(true, "enabled"));
+    }
+
+    private sealed class TransientHeartbeatUploader : ICommandUploader
+    {
+        public TaskCompletionSource Uploaded { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int HeartbeatAttempts { get; private set; }
+
+        public Task<UploadResult> UploadAsync(
+            Guid earId,
+            Guid segmentId,
+            ReadOnlyMemory<byte> wav,
+            CancellationToken cancellationToken)
+        {
+            Uploaded.TrySetResult();
+            return Task.FromResult(new UploadResult(UploadDisposition.Accepted, "accepted"));
+        }
+
+        public Task<HeartbeatResult> HeartbeatAsync(Guid earId, CancellationToken cancellationToken)
+        {
+            HeartbeatAttempts++;
+            if (HeartbeatAttempts == 1)
+            {
+                throw new HttpRequestException("temporary network failure");
+            }
+
+            return Task.FromResult(new HeartbeatResult(true, "enabled"));
+        }
     }
 
     private sealed class MemoryCredentialStore : ICredentialStore
