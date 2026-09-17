@@ -109,16 +109,31 @@ public sealed class AdminSessionDebugLogTests
         log.RecordConnected(ear);
         log.RecordConnected(ear);
         log.RecordSpeechUploadReceived(ear, Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        log.RecordSpeechTranscriptionQueued(ear, Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        log.RecordSpeechTranscriptionOutcome(ear, TranscriptionStatus.TimedOut, "transcription-timeout");
         log.RecordCommandReceived(ear, "turn on the kitchen lights");
         log.RecordDisconnectedEars(DateTimeOffset.UtcNow.AddMinutes(3));
 
         var entries = log.Read();
-        Assert.Equal(["Registered", "Connected", "Speech upload received", "Command received", "Disconnected"],
+        Assert.Equal(
+            [
+                "Registered",
+                "Connected",
+                "Speech upload received",
+                "Speech transcription queued",
+                "Speech transcription completed",
+                "Command received",
+                "Disconnected",
+            ],
             entries.Select(entry => entry.Event));
         Assert.Equal("Segment: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", entries[2].Details);
         Assert.Null(entries[2].Transcript);
-        Assert.Equal("Speech command transcribed.", entries[3].Details);
-        Assert.Equal("turn on the kitchen lights", entries[3].Transcript);
+        Assert.Equal(
+            "Segment: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee; awaiting local transcription.",
+            entries[3].Details);
+        Assert.Equal("Status: TimedOut; code: transcription-timeout.", entries[4].Details);
+        Assert.Equal("Speech command transcribed.", entries[5].Details);
+        Assert.Equal("turn on the kitchen lights", entries[5].Transcript);
     }
 
     private sealed class ImageResponseHandler : HttpMessageHandler

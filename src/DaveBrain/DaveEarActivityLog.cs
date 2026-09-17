@@ -49,6 +49,20 @@ public sealed class DaveEarActivityLog
             ear,
             segmentId is null ? "Segment ID was not supplied." : $"Segment: {segmentId:D}");
 
+    public void RecordSpeechTranscriptionQueued(EarRecord ear, Guid? segmentId) =>
+        Write(
+            "Speech transcription queued",
+            ear,
+            segmentId is null
+                ? "Validated audio is awaiting local transcription."
+                : $"Segment: {segmentId:D}; awaiting local transcription.");
+
+    public void RecordSpeechTranscriptionOutcome(
+        EarRecord ear,
+        TranscriptionStatus status,
+        string errorCode) =>
+        Write("Speech transcription completed", ear, $"Status: {status}; code: {errorCode}.");
+
     public void RecordDeleted(EarRecord ear)
     {
         lock (gate)

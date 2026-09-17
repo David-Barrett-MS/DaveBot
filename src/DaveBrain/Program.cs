@@ -586,6 +586,7 @@ app.MapPost(
             return Results.BadRequest(response);
         }
 
+        earActivity.RecordSpeechTranscriptionQueued(ear, segmentId);
         var queued = await transcriptionQueue.EnqueueAsync(audio, cancellationToken);
         if (queued.Status == SpeechQueueStatus.Overloaded)
         {
@@ -594,6 +595,10 @@ app.MapPost(
                 queued.CorrelationId,
                 SpeechCommandStatus.Overloaded,
                 ErrorCode: "transcription-queue-full");
+            earActivity.RecordSpeechTranscriptionOutcome(
+                ear,
+                TranscriptionStatus.Failed,
+                response.ErrorCode ?? "transcription-queue-full");
             await AuditAsync(response);
             return Results.Json(
                 response,
@@ -608,6 +613,10 @@ app.MapPost(
                 SpeechCommandHttp.ToSpeechCommandStatus(transcription.Status),
                 ErrorCode: SpeechCommandHttp.ToTranscriptionErrorCode(transcription.Status),
                 TranscriptionOutcome: transcription.Status);
+            earActivity.RecordSpeechTranscriptionOutcome(
+                ear,
+                transcription.Status,
+                response.ErrorCode ?? "transcription-failed");
             await AuditAsync(response);
             return Results.Json(
                 response,
@@ -617,6 +626,10 @@ app.MapPost(
         var transcript = transcription.Transcript
             ?? throw new InvalidOperationException(
                 "A successful transcription did not include a transcript.");
+        earActivity.RecordSpeechTranscriptionOutcome(
+            ear,
+            transcription.Status,
+            "transcription-succeeded");
         earActivity.RecordCommandReceived(ear, transcript);
         var command = await commandProcessor.ProcessAsync(
             transcript,
