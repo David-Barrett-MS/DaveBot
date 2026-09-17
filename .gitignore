@@ -46,3 +46,4 @@ bld/
 /src/DaveBrain/*.exe
 /src/DaveBrain/web.config
 /src/DaveBrain/Properties/PublishProfiles/CrankyServer.pubxml.user
+/Sample Speech/Turn Lounge Lights On.wav
