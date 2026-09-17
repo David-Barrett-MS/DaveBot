@@ -1,13 +1,9 @@
 using System.Buffers.Binary;
-using System.Net;
-using System.Net.Http.Headers;
-using System.Text.Json;
 using System.Threading.Channels;
 
 namespace DaveBrain;
 
 public sealed record SpeechTranscriptionOptions(
-    Uri Endpoint,
     string Model,
     TimeSpan Timeout,
     int MaximumRequestBytes,
@@ -15,16 +11,14 @@ public sealed record SpeechTranscriptionOptions(
     int QueueCapacity,
     TimeSpan QueueWaitTimeout)
 {
-    public const string WhisperTinyModel = "whisper-tiny";
+    public const string NemotronSpeechStreamingEnglishModel = "nemotron-speech-streaming-en-0.6b";
     public const int BytesPerSecond = 32_000;
 
     public static SpeechTranscriptionOptions FromConfiguration(IConfiguration configuration)
     {
         var section = configuration.GetSection("DaveBot:SpeechTranscription");
-        var endpoint = section["Endpoint"] ?? "http://127.0.0.1:5273/v1/audio/transcriptions";
         return new SpeechTranscriptionOptions(
-            new Uri(endpoint, UriKind.Absolute),
-            section["Model"] ?? WhisperTinyModel,
+            section["Model"] ?? NemotronSpeechStreamingEnglishModel,
             TimeSpan.FromSeconds(section.GetValue("TimeoutSeconds", 20)),
             section.GetValue("MaximumRequestBytes", 1_000_000),
             TimeSpan.FromSeconds(section.GetValue("MaximumDurationSeconds", 30)),
@@ -34,19 +28,10 @@ public sealed record SpeechTranscriptionOptions(
 
     public void Validate()
     {
-        if (!Endpoint.IsAbsoluteUri ||
-            (Endpoint.Scheme != Uri.UriSchemeHttp && Endpoint.Scheme != Uri.UriSchemeHttps) ||
-            !string.IsNullOrEmpty(Endpoint.UserInfo) ||
-            !IsLoopbackHost(Endpoint.Host))
+        if (!string.Equals(Model, NemotronSpeechStreamingEnglishModel, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "DaveBot:SpeechTranscription:Endpoint must be an HTTP(S) localhost or loopback URI.");
-        }
-
-        if (!string.Equals(Model, WhisperTinyModel, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"DaveBot only permits the {WhisperTinyModel} transcription model.");
+                $"DaveBot only permits the {NemotronSpeechStreamingEnglishModel} transcription model.");
         }
 
         if (Timeout <= TimeSpan.Zero || QueueWaitTimeout <= TimeSpan.Zero ||
@@ -58,9 +43,6 @@ public sealed record SpeechTranscriptionOptions(
         }
     }
 
-    private static bool IsLoopbackHost(string host) =>
-        string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
-        (IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address));
 }
 
 public enum WavValidationFailure
@@ -216,7 +198,10 @@ public sealed record TranscriptionResult(TranscriptionStatus Status, string? Tra
         new(TranscriptionStatus.Succeeded, transcript);
 }
 
-public sealed record TranscriptionDependencyStatus(bool IsAvailable, string Code);
+public sealed record TranscriptionDependencyStatus(
+    bool IsAvailable,
+    string Code,
+    string? ModelId = null);
 
 public interface ITranscriptionService
 {
@@ -226,218 +211,6 @@ public interface ITranscriptionService
 
     Task<TranscriptionDependencyStatus> GetDependencyStatusAsync(
         CancellationToken cancellationToken = default);
-}
-
-public sealed class FoundryLocalTranscriptionService(
-    HttpClient httpClient,
-    SpeechTranscriptionOptions options) : ITranscriptionService
-{
-    private const int MaximumResponseBytes = 65_536;
-
-    public async Task<TranscriptionResult> TranscribeAsync(
-        ReadOnlyMemory<byte> wavAudio,
-        CancellationToken cancellationToken = default)
-    {
-        if (wavAudio.Length > options.MaximumRequestBytes)
-        {
-            return new TranscriptionResult(TranscriptionStatus.Failed);
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(options.Timeout);
-        using var form = new MultipartFormDataContent();
-        form.Add(new StringContent(SpeechTranscriptionOptions.WhisperTinyModel), "model");
-        var audio = new ByteArrayContent(wavAudio.ToArray());
-        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-        form.Add(audio, "file", "command.wav");
-
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, options.Endpoint) { Content = form };
-            using var response = await httpClient.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                timeout.Token);
-            if (response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout)
-            {
-                return new TranscriptionResult(TranscriptionStatus.TimedOut);
-            }
-
-            if ((int)response.StatusCode >= 500 || response.StatusCode == HttpStatusCode.ServiceUnavailable)
-            {
-                return new TranscriptionResult(TranscriptionStatus.Unavailable);
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return new TranscriptionResult(TranscriptionStatus.Failed);
-            }
-
-            if (response.Content.Headers.ContentLength > MaximumResponseBytes)
-            {
-                return new TranscriptionResult(TranscriptionStatus.Failed);
-            }
-
-            await using var stream = new LimitedReadStream(
-                await response.Content.ReadAsStreamAsync(timeout.Token),
-                MaximumResponseBytes);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
-            if (!document.RootElement.TryGetProperty("text", out var text) ||
-                text.ValueKind != JsonValueKind.String)
-            {
-                return new TranscriptionResult(TranscriptionStatus.Failed);
-            }
-
-            var transcript = text.GetString()?.Trim();
-            return string.IsNullOrEmpty(transcript)
-                ? new TranscriptionResult(TranscriptionStatus.NoSpeech)
-                : TranscriptionResult.Success(transcript.Length <= 500 ? transcript : transcript[..500]);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return new TranscriptionResult(TranscriptionStatus.Canceled);
-        }
-        catch (OperationCanceledException)
-        {
-            return new TranscriptionResult(TranscriptionStatus.TimedOut);
-        }
-        catch (HttpRequestException)
-        {
-            return new TranscriptionResult(TranscriptionStatus.Unavailable);
-        }
-        catch (JsonException)
-        {
-            return new TranscriptionResult(TranscriptionStatus.Failed);
-        }
-        catch (InvalidDataException)
-        {
-            return new TranscriptionResult(TranscriptionStatus.Failed);
-        }
-    }
-
-    public async Task<TranscriptionDependencyStatus> GetDependencyStatusAsync(
-        CancellationToken cancellationToken = default)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(options.Timeout);
-        var modelsEndpoint = new Uri(options.Endpoint, "../models");
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, modelsEndpoint);
-            using var response = await httpClient.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                timeout.Token);
-            if (!response.IsSuccessStatusCode)
-            {
-                return new TranscriptionDependencyStatus(false, "endpoint-unavailable");
-            }
-
-            if (response.Content.Headers.ContentLength > MaximumResponseBytes)
-            {
-                return new TranscriptionDependencyStatus(false, "endpoint-invalid-response");
-            }
-
-            await using var stream = new LimitedReadStream(
-                await response.Content.ReadAsStreamAsync(timeout.Token),
-                MaximumResponseBytes);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
-            var modelFound = document.RootElement.TryGetProperty("data", out var models) &&
-                models.ValueKind == JsonValueKind.Array &&
-                models.EnumerateArray().Any(model =>
-                    model.TryGetProperty("id", out var id) &&
-                    string.Equals(id.GetString(), SpeechTranscriptionOptions.WhisperTinyModel, StringComparison.Ordinal));
-            return modelFound
-                ? new TranscriptionDependencyStatus(true, "ready")
-                : new TranscriptionDependencyStatus(false, "whisper-tiny-unavailable");
-        }
-        catch (OperationCanceledException)
-        {
-            return new TranscriptionDependencyStatus(false, "endpoint-timeout");
-        }
-        catch (HttpRequestException)
-        {
-            return new TranscriptionDependencyStatus(false, "endpoint-unavailable");
-        }
-        catch (JsonException)
-        {
-            return new TranscriptionDependencyStatus(false, "endpoint-invalid-response");
-        }
-        catch (InvalidDataException)
-        {
-            return new TranscriptionDependencyStatus(false, "endpoint-invalid-response");
-        }
-    }
-}
-
-internal sealed class LimitedReadStream(Stream inner, long maximumBytes) : Stream
-{
-    private long _remaining = maximumBytes;
-
-    public override bool CanRead => inner.CanRead;
-    public override bool CanSeek => false;
-    public override bool CanWrite => false;
-    public override long Length => throw new NotSupportedException();
-    public override long Position
-    {
-        get => throw new NotSupportedException();
-        set => throw new NotSupportedException();
-    }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        var read = inner.Read(buffer, offset, count);
-        Consume(read);
-        return read;
-    }
-
-    public override async ValueTask<int> ReadAsync(
-        Memory<byte> buffer,
-        CancellationToken cancellationToken = default)
-    {
-        var read = await inner.ReadAsync(buffer, cancellationToken);
-        Consume(read);
-        return read;
-    }
-
-    public override Task<int> ReadAsync(
-        byte[] buffer,
-        int offset,
-        int count,
-        CancellationToken cancellationToken) =>
-        ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-
-    public override void Flush() => throw new NotSupportedException();
-    public override Task FlushAsync(CancellationToken cancellationToken) =>
-        throw new NotSupportedException();
-    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            inner.Dispose();
-        }
-
-        base.Dispose(disposing);
-    }
-
-    public override async ValueTask DisposeAsync()
-    {
-        await inner.DisposeAsync();
-        GC.SuppressFinalize(this);
-    }
-
-    private void Consume(int bytesRead)
-    {
-        _remaining -= bytesRead;
-        if (_remaining < 0)
-        {
-            throw new InvalidDataException("Foundry Local response exceeded the configured safe limit.");
-        }
-    }
 }
 
 public enum SpeechQueueStatus

@@ -3,30 +3,32 @@
 ## Objective
 
 Add a bounded, local speech-command path that accepts valid WAV audio from an
-authenticated DaveEar, transcribes it with Foundry Local Whisper Tiny, and
+authenticated DaveEar, transcribes it with Foundry Local Nemotron Speech, and
 hands the result to the Phase 3 command processor.
 
-Whisper Tiny is the sole model use in DaveBot and is limited to transcription;
+Nemotron Speech is the sole model use in DaveBot and is limited to transcription;
 the command processor and its responses remain custom deterministic code.
 
 ## Prerequisites
 
 - Phase 3 text commands are fully functional and tested.
-- Foundry Local with Whisper Tiny is installed/configured on the Windows
-  Server host.
+- DaveBrain is published for the Windows Server architecture, so its
+  `Microsoft.AI.Foundry.Local` package runtime is included in the deployment.
 
 ## Implementation work
 
 ### 1. Transcription adapter
 
-1. Define `ITranscriptionService` in DaveBrain with a Foundry Local HTTP
-   implementation and deterministic fake test implementation.
-2. Keep the configured endpoint, model name, timeout, request format, and
-   response mapping in this adapter only.
-3. Explicitly select Whisper Tiny; never fall back to a cloud service or a
+1. Define `ITranscriptionService` in DaveBrain with a packaged Foundry Local
+   native SDK implementation and deterministic fake test implementation.
+2. Initialize Foundry Local in process, download/load only
+   `nemotron-speech-streaming-en-0.6b`, and
+   pass the validated WAV's raw PCM payload to an `AudioSession` through an
+   in-memory `ItemQueue` in 100 ms chunks.
+3. Explicitly select Nemotron Speech; never fall back to a cloud service or a
    different local model without an explicit configuration change.
-4. Make readiness fail with a clear dependency result when the configured
-   endpoint/model is unavailable.
+4. Make readiness fail with a clear dependency result when the packaged SDK or
+   Nemotron Speech model is unavailable.
 
 ### 2. Audio intake and queue
 
@@ -39,8 +41,8 @@ the command processor and its responses remain custom deterministic code.
    oversized, or overlong audio before it reaches Foundry Local.
 4. Use one bounded transcription worker and a small bounded queue. Return a
    correlated retry/overload response rather than retaining unbounded requests.
-5. Delete temporary audio after transcription. Diagnostic retention is
-   opt-in, quota-limited, ACL-protected, and disabled by default.
+5. Keep audio memory-only through transcription. Do not write uploads to
+   temporary or persistent storage; diagnostic retention remains disabled.
 
 ### 3. Command result
 
@@ -65,21 +67,23 @@ the command processor and its responses remain custom deterministic code.
 
 ## Exit checklist
 
-- [x] A valid Ear WAV can invoke a real local transcription and device action.
+- [ ] A valid Ear WAV can invoke a real local transcription and device action.
 - [x] Invalid/oversized requests do not consume transcription capacity.
-- [x] An unavailable Foundry endpoint is visible through readiness and a safe
+- [x] An unavailable Foundry SDK/model is visible through readiness and a safe
       command result.
 - [x] Temporary audio is never persisted; bounded in-memory audio becomes
       collectible when its request completes or is cancelled.
 
 ## Implemented configuration and API
 
-`DaveBot:SpeechTranscription` configures the local OpenAI-compatible Foundry
-endpoint, timeout, WAV upload/duration limits, and queue bounds. The endpoint
-must be HTTP(S) on `localhost` or a loopback IP and the only accepted model
-value is `whisper-tiny`; invalid values fail startup. Defaults are a 1 MB
-upload, 30-second WAV, 20-second Foundry timeout, and one worker with two
-queued requests.
+`DaveBot:SpeechTranscription` configures the model, timeout, WAV
+upload/duration limits, and queue bounds. The only accepted model value is
+`nemotron-speech-streaming-en-0.6b`; invalid values fail startup. DaveBrain bundles the Foundry
+Local SDK through NuGet, so it does not require a Foundry CLI, loopback HTTP
+endpoint, or separate daemon. On its first start, the SDK downloads the model
+to the DaveBrain service account's model cache. Defaults are a 1 MB upload,
+30-second WAV, 20-second Foundry timeout, and one worker with two queued
+requests.
 
 `POST /api/v1/speech-commands` accepts `multipart/form-data` with `audio`
 (mono 16 kHz 16-bit PCM RIFF/WAVE) and `earId`. It applies the same issuer,

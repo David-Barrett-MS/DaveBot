@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text;
 using DaveBrain;
 using DaveHome;
@@ -8,14 +7,11 @@ namespace DaveBrain.Tests;
 
 public sealed class WavAudioValidatorTests
 {
-    [Theory]
-    [InlineData("https://foundry.example.test/v1/audio/transcriptions", "whisper-tiny")]
-    [InlineData("http://127.0.0.1:5273/v1/audio/transcriptions", "whisper-base")]
-    public void NonLocalEndpointsAndOtherModelsAreRejected(string endpoint, string model)
+    [Fact]
+    public void OtherModelsAreRejected()
     {
         var options = new SpeechTranscriptionOptions(
-            new Uri(endpoint),
-            model,
+            "whisper-tiny",
             TimeSpan.FromSeconds(1),
             1_000_000,
             TimeSpan.FromSeconds(30),
@@ -32,6 +28,32 @@ public sealed class WavAudioValidatorTests
 
         Assert.True(result.Succeeded);
         Assert.Equal(TimeSpan.FromSeconds(1), result.Audio!.Duration);
+        Assert.Equal(44, result.Audio.DataOffset);
+        Assert.Equal(32_000, result.Audio.DataLength);
+    }
+
+    [Fact]
+    public void StreamingPcmIsSplitIntoBounded100MillisecondChunks()
+    {
+        var chunks = FoundryLocalSdkTranscriptionService
+            .SplitPcmForStreaming(new byte[6_401])
+            .ToArray();
+
+        Assert.Equal([3_200, 3_200, 1], chunks.Select(chunk => chunk.Length));
+    }
+
+    [Fact]
+    public void IncrementalTranscriptCandidatesAreCombined()
+    {
+        var transcript = FoundryLocalSdkTranscriptionService.CombineTranscriptCandidates(
+        [
+            "Turn",
+            "Turn lounge",
+            "lights",
+            "lights on",
+        ]);
+
+        Assert.Equal("Turn lounge lights on", transcript);
     }
 
     [Theory]
@@ -92,8 +114,7 @@ public sealed class WavAudioValidatorTests
         int maximumBytes = 1_000_000,
         TimeSpan? maximumDuration = null) =>
         new(new SpeechTranscriptionOptions(
-            new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
-            SpeechTranscriptionOptions.WhisperTinyModel,
+            SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
             TimeSpan.FromSeconds(1),
             maximumBytes,
             maximumDuration ?? TimeSpan.FromSeconds(30),
@@ -124,185 +145,73 @@ public sealed class WavAudioValidatorTests
     }
 }
 
-public sealed class FoundryLocalTranscriptionServiceTests
-{
-    [Fact]
-    public async Task SendsOnlyWhisperTinyAndMapsTranscript()
-    {
-        var handler = new DelegateHandler(async request =>
-        {
-            Assert.Equal(HttpMethod.Post, request.Method);
-            Assert.Equal("/v1/audio/transcriptions", request.RequestUri!.AbsolutePath);
-            var body = await request.Content!.ReadAsStringAsync();
-            Assert.Contains("whisper-tiny", body, StringComparison.Ordinal);
-            return JsonResponse("""{"text":" lights on "}""");
-        });
-        var service = new FoundryLocalTranscriptionService(
-            new HttpClient(handler),
-            CreateOptions());
-
-        var result = await service.TranscribeAsync(WavAudioValidatorTests.CreateWav());
-
-        Assert.Equal(TranscriptionStatus.Succeeded, result.Status);
-        Assert.Equal("lights on", result.Transcript);
-    }
-
-    [Fact]
-    public async Task MapsNoTextAndUnavailableDependency()
-    {
-        var noText = new FoundryLocalTranscriptionService(
-            new HttpClient(new DelegateHandler(_ => Task.FromResult(JsonResponse("""{"text":" "}""")))),
-            CreateOptions());
-        var unavailable = new FoundryLocalTranscriptionService(
-            new HttpClient(new DelegateHandler(_ => Task.FromResult(
-                new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)))),
-            CreateOptions());
-
-        Assert.Equal(TranscriptionStatus.NoSpeech,
-            (await noText.TranscribeAsync(WavAudioValidatorTests.CreateWav())).Status);
-        Assert.Equal(TranscriptionStatus.Unavailable,
-            (await unavailable.TranscribeAsync(WavAudioValidatorTests.CreateWav())).Status);
-    }
-
-    [Fact]
-    public async Task MapsTimeoutAndCallerCancellation()
-    {
-        var timeoutService = new FoundryLocalTranscriptionService(
-            new HttpClient(new DelegateHandler(async (_, cancellationToken) =>
-            {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                return JsonResponse("""{"text":"unreachable"}""");
-            })),
-            CreateOptions(timeout: TimeSpan.FromMilliseconds(30)));
-        var canceledService = new FoundryLocalTranscriptionService(
-            new HttpClient(new DelegateHandler(async (_, cancellationToken) =>
-            {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                return JsonResponse("""{"text":"unreachable"}""");
-            })),
-            CreateOptions());
-        using var canceled = new CancellationTokenSource();
-        canceled.Cancel();
-
-        Assert.Equal(TranscriptionStatus.TimedOut,
-            (await timeoutService.TranscribeAsync(WavAudioValidatorTests.CreateWav())).Status);
-        Assert.Equal(TranscriptionStatus.Canceled,
-            (await canceledService.TranscribeAsync(WavAudioValidatorTests.CreateWav(), canceled.Token)).Status);
-    }
-
-    [Fact]
-    public async Task ReadinessRequiresWhisperTiny()
-    {
-        var service = new FoundryLocalTranscriptionService(
-            new HttpClient(new DelegateHandler(_ => Task.FromResult(JsonResponse(
-                """{"data":[{"id":"some-other-model"}]}""")))),
-            CreateOptions());
-
-        var result = await service.GetDependencyStatusAsync();
-
-        Assert.False(result.IsAvailable);
-        Assert.Equal("whisper-tiny-unavailable", result.Code);
-    }
-
-    private static SpeechTranscriptionOptions CreateOptions(TimeSpan? timeout = null) =>
-        new(
-            new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
-            SpeechTranscriptionOptions.WhisperTinyModel,
-            timeout ?? TimeSpan.FromSeconds(1),
-            1_000_000,
-            TimeSpan.FromSeconds(30),
-            1,
-            TimeSpan.FromSeconds(1));
-
-    private static HttpResponseMessage JsonResponse(string json) =>
-        new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
-}
-
 public sealed class FoundryLocalServiceTests
 {
     [Fact]
-    public async Task StartsAndStopsTheWhisperTinyDaemon()
+    public async Task InitializesAndStopsThePackagedNemotronRuntime()
     {
-        var commands = new RecordingFoundryCommands();
-        var transcription = new FakeTranscriptionService(_ =>
-            Task.FromResult(TranscriptionResult.Success("unused")));
+        var runtime = new FakeFoundryRuntime();
         var service = new FoundryLocalService(
-            new FoundryLocalOptions("foundry-test", TimeSpan.FromSeconds(10)),
-            new SpeechTranscriptionOptions(
-                new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
-                SpeechTranscriptionOptions.WhisperTinyModel,
-                TimeSpan.FromSeconds(1),
-                1_000_000,
-                TimeSpan.FromSeconds(30),
-                1,
-                TimeSpan.FromSeconds(1)),
-            commands,
-            transcription,
+            new FoundryLocalOptions(TimeSpan.FromSeconds(10)),
+            runtime,
             NullLogger<FoundryLocalService>.Instance);
 
         await service.StartAsync(CancellationToken.None);
         await service.StopAsync(CancellationToken.None);
 
-        Assert.Equal(
-        [
-            "server start --port 5273 --idle-timeout 0",
-            "model download whisper-tiny",
-            "model load whisper-tiny",
-            "server stop",
-        ],
-        commands.Commands);
+        Assert.Equal(1, runtime.InitializationAttempts);
+        Assert.Equal(1, runtime.StopAttempts);
     }
 
     [Fact]
-    public async Task UnavailableFoundryDoesNotPreventServerStartup()
+    public async Task UnavailablePackagedRuntimeDoesNotPreventServerStartup()
     {
-        var commands = new FailingFoundryCommands();
+        var runtime = new FakeFoundryRuntime
+        {
+            InitializationException = new InvalidOperationException("Foundry Local is unavailable."),
+        };
         var service = new FoundryLocalService(
-            new FoundryLocalOptions("missing-foundry", TimeSpan.FromSeconds(10)),
-            new SpeechTranscriptionOptions(
-                new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
-                SpeechTranscriptionOptions.WhisperTinyModel,
-                TimeSpan.FromSeconds(1),
-                1_000_000,
-                TimeSpan.FromSeconds(30),
-                1,
-                TimeSpan.FromSeconds(1)),
-            commands,
-            new FakeTranscriptionService(_ => Task.FromResult(TranscriptionResult.Success("unused"))),
+            new FoundryLocalOptions(TimeSpan.FromSeconds(10)),
+            runtime,
             NullLogger<FoundryLocalService>.Instance);
 
         await service.StartAsync(CancellationToken.None);
 
-        Assert.Equal(1, commands.Attempts);
+        Assert.Equal(1, runtime.InitializationAttempts);
+        Assert.Equal(1, runtime.StopAttempts);
     }
 
-    private sealed class RecordingFoundryCommands : IFoundryLocalCommandRunner
+    private sealed class FakeFoundryRuntime : IFoundryLocalRuntime
     {
-        public List<string> Commands { get; } = [];
+        public int InitializationAttempts { get; private set; }
+        public int StopAttempts { get; private set; }
+        public Exception? InitializationException { get; init; }
 
-        public Task RunAsync(
-            string executable,
-            IReadOnlyList<string> arguments,
-            CancellationToken cancellationToken)
+        public Task InitializeAsync(CancellationToken cancellationToken)
         {
-            Commands.Add(string.Join(' ', arguments));
+            InitializationAttempts++;
+            if (InitializationException is not null)
+            {
+                throw InitializationException;
+            }
+
             return Task.CompletedTask;
         }
 
-    }
-
-    private sealed class FailingFoundryCommands : IFoundryLocalCommandRunner
-    {
-        public int Attempts { get; private set; }
-
-        public Task RunAsync(
-            string executable,
-            IReadOnlyList<string> arguments,
-            CancellationToken cancellationToken)
+        public Task StopAsync(CancellationToken cancellationToken)
         {
-            Attempts++;
-            throw new InvalidOperationException("Foundry Local is not installed.");
+            StopAttempts++;
+            return Task.CompletedTask;
         }
+
+        public Task<TranscriptionResult> TranscribeAsync(
+            ReadOnlyMemory<byte> wavAudio,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(TranscriptionResult.Success("unused"));
+
+        public Task<TranscriptionDependencyStatus> GetDependencyStatusAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TranscriptionDependencyStatus(true, "ready"));
     }
 }
 
@@ -380,8 +289,7 @@ public sealed class SpeechTranscriptionQueueTests
         new(
             transcription,
             new SpeechTranscriptionOptions(
-                new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
-                SpeechTranscriptionOptions.WhisperTinyModel,
+                SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
                 TimeSpan.FromSeconds(1),
                 1_000_000,
                 TimeSpan.FromSeconds(30),
@@ -426,22 +334,4 @@ internal sealed class FakeTranscriptionService(
     public Task<TranscriptionDependencyStatus> GetDependencyStatusAsync(
         CancellationToken cancellationToken = default) =>
         Task.FromResult(new TranscriptionDependencyStatus(true, "ready"));
-}
-
-internal sealed class DelegateHandler : HttpMessageHandler
-{
-    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
-
-    public DelegateHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler) :
-        this((request, _) => handler(request))
-    {
-    }
-
-    public DelegateHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) =>
-        _handler = handler;
-
-    protected override Task<HttpResponseMessage> SendAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken) =>
-        _handler(request, cancellationToken);
 }

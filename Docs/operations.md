@@ -42,8 +42,7 @@ Grant this identity:
   plus outbound HTTPS/WSS on TCP 443 if Philips Air+ is enabled.
 
 Do not run DaveBrain as LocalSystem, a personal administrator account, or a
-shared interactive account. Keep Foundry Local bound to loopback and grant the
-service only the local access it needs to call it.
+shared interactive account.
 
 The OpenIddict protocol database persists device codes, authorizations, and
 refresh tokens. Include `identity.protocol.db` in the DaveBrain state backup;
@@ -52,27 +51,24 @@ to enroll again.
 
 ## Local speech transcription
 
-DaveBrain sends `POST /api/v1/speech-commands` audio only to the configured
-Foundry Local OpenAI-compatible transcription endpoint. DaveBrain starts and
-stops the Foundry Local daemon, downloads and loads only `whisper-tiny`, and
-keeps the daemon active while DaveBrain is running. The default endpoint is
-`http://127.0.0.1:5273/v1/audio/transcriptions`; startup rejects any endpoint
-that is not `localhost` or an IP loopback address. It also rejects every model
-name except `whisper-tiny`. There is no cloud, alternate-model, chat, or
-natural-language fallback.
+DaveBrain ships the Foundry Local native SDK as a NuGet dependency. It does
+not require the Foundry Local CLI, a separate daemon, a loopback listener, or
+an installed `foundry.exe`. On first startup, the SDK downloads and loads only
+`nemotron-speech-streaming-en-0.6b` using the DaveBrain service account's
+model cache; later startups reuse that cache. This is the Foundry Local model
+that supports DaveBot's in-memory streaming PCM transcription path. There is
+no cloud inference, alternate model, chat, or natural-language fallback.
 
-Configure `DaveBot:SpeechTranscription` with the loopback endpoint and bounded
-timeout, upload/duration, and queue values. The defaults allow a 1 MB, mono
-16 kHz, 16-bit PCM WAV of at most 30 seconds and one worker with two waiting
-items. Set `DaveBot:FoundryLocal:Executable` to the machine-wide `foundry`
-executable path when it is not on the DaveBrain service account's `PATH`.
-If Foundry Local or Whisper Tiny cannot become ready, DaveBrain logs the
-startup failure and continues serving its administrative UI; `/health` and
-speech requests return a safe 503 dependency result until it is available.
-`/health/live` only reports whether DaveBrain is running. Audio is held only
-in the bounded in-memory queue for the request. Multipart buffering is
-explicitly memory-only within the configured body limit, so raw audio is never
-written to temporary storage or otherwise persisted.
+Configure `DaveBot:SpeechTranscription` with bounded timeout, upload/duration,
+and queue values. The defaults allow a 1 MB, mono 16 kHz, 16-bit PCM WAV of at
+most 30 seconds and one worker with two waiting items. If Foundry Local or
+the Nemotron Speech model cannot become ready, DaveBrain logs the startup failure and
+continues serving its administrative UI; `/health` and speech requests return
+a safe 503 dependency result until it is available. `/health/live` only
+reports whether DaveBrain is running. Audio is held only in the bounded
+in-memory queue for the request. Its validated raw PCM payload is passed to
+the SDK's `AudioSession` through an in-memory `ItemQueue` in 100 ms chunks;
+audio is never written to temporary storage or otherwise persisted.
 
 ## Self-signed certificate
 
@@ -254,8 +250,8 @@ client certificate, or private key between devices.
 
 DaveEar is an audio capture and upload agent. It does not contain a chat,
 natural-language, or general-purpose model. DaveBrain is the only component
-that transcribes submitted PCM WAV audio, using its loopback-only
-`whisper-tiny` Foundry Local configuration.
+that transcribes submitted PCM WAV audio, using its in-process
+`nemotron-speech-streaming-en-0.6b` Foundry Local configuration.
 
 Register each machine after installing the DaveBrain TLS trust anchor:
 

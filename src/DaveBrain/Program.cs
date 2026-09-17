@@ -115,12 +115,12 @@ builder.Services.AddSingleton<IHueSwitchEventSource>(provider => provider.GetReq
 builder.Services.AddSingleton<ICommandProcessor, CommandProcessor>();
 builder.Services.AddSingleton(speechOptions);
 builder.Services.AddSingleton(foundryOptions);
-builder.Services.AddSingleton<IFoundryLocalCommandRunner, FoundryLocalCommandRunner>();
 builder.Services.AddSingleton<WavAudioValidator>();
-builder.Services.AddHttpClient<ITranscriptionService, FoundryLocalTranscriptionService>(client =>
-{
-    client.Timeout = Timeout.InfiniteTimeSpan;
-});
+builder.Services.AddSingleton<FoundryLocalSdkTranscriptionService>();
+builder.Services.AddSingleton<IFoundryLocalRuntime>(provider =>
+    provider.GetRequiredService<FoundryLocalSdkTranscriptionService>());
+builder.Services.AddSingleton<ITranscriptionService>(provider =>
+    provider.GetRequiredService<FoundryLocalSdkTranscriptionService>());
 builder.Services.AddHostedService<FoundryLocalService>();
 builder.Services.AddSingleton<SpeechTranscriptionQueue>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<SpeechTranscriptionQueue>());
@@ -258,7 +258,7 @@ async Task<IResult> ReadyHealthAsync(
         identityRevision = identityState.Current.Revision,
         transcription = dependency.Code,
         hue = requiresHue ? hueStatus.ToString() : "not-configured",
-        model = SpeechTranscriptionOptions.WhisperTinyModel,
+        model = speechOptions.Model,
     };
     return dependency.IsAvailable && hueAvailable
         ? Results.Ok(response)

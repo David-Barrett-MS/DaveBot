@@ -5,7 +5,7 @@
 DaveBot is a lightweight, local-first home-automation system designed to run
 continuously on a Pentium J4205 machine with 8 GB RAM. It accepts speech from
 registered DaveEar clients, turns it into text using Microsoft Foundry Local
-with Whisper Tiny, resolves the command against the caller's location, and
+with Nemotron Speech, resolves the command against the caller's location, and
 controls registered home devices. Philips Hue is the first device integration.
 
 The first release should support this complete path:
@@ -14,13 +14,13 @@ The first release should support this complete path:
 DaveEar microphone
   -> voice activity detection and WAV segment
   -> DaveBrain /speech-commands
-  -> Foundry Local Whisper Tiny
+  -> Foundry Local Nemotron Speech
   -> DaveBrain command parser and location resolver
   -> DaveHome Hue adapter
   -> Philips Hue Bridge and lights
 ```
 
-Whisper Tiny is the only model DaveBot runs: it performs local speech
+Nemotron Speech is the only model DaveBot runs: it performs local speech
 transcription only. Command parsing, target resolution, automation, and every
 response are custom deterministic code; DaveBot does not run a chat,
 natural-language, or general-purpose model.
@@ -109,9 +109,9 @@ required OAuth features before adoption.
 - Require HTTPS for Ear-to-Brain communication outside an explicitly marked
   development profile. Use the configured self-signed certificate and install
   its trust chain explicitly on every browser and DaveEar host.
-- Run Foundry Local and Whisper Tiny on the same host as DaveBrain. DaveBrain
-  invokes its configured local transcription endpoint; it does not load a
-  second speech model in-process.
+- Run the packaged Foundry Local SDK and Nemotron Speech on the same host as
+  DaveBrain. DaveBrain loads the model in process and does not invoke a local
+  transcription endpoint or a second speech model.
 - Use an application-owned in-memory state store as the primary runtime store.
   All command routing, configuration reads, trigger evaluation, and current
   device state operate on memory-resident immutable snapshots.
@@ -155,8 +155,7 @@ secret store for secrets. Configuration must include:
     "CommandQueueCapacity": 4
   },
   "Transcription": {
-    "BaseUrl": "http://127.0.0.1:<configured-port>",
-    "Model": "whisper-tiny",
+    "Model": "nemotron-speech-streaming-en-0.6b",
     "RequestTimeoutSeconds": 45
   },
   "Hue": {
@@ -630,16 +629,16 @@ has tests and real household usage feedback.
 
 ### 6.2 Transcription integration
 
-Build `ITranscriptionService` with a Foundry Local implementation and a fake
-test implementation. The implementation sends the validated WAV stream to the
-configured local Whisper Tiny transcription endpoint, explicitly selects the
-configured model, and uses cancellation/timeout handling.
+Build `ITranscriptionService` with a packaged Foundry Local SDK implementation
+and a fake test implementation. The implementation passes validated raw PCM
+audio to the in-process Nemotron Speech streaming session, explicitly selects
+the configured model, and uses cancellation/timeout handling.
 
-Before implementation, perform a short compatibility spike on the actual
-Foundry Local version installed on the server:
+Before implementation, perform a short compatibility spike against the
+Foundry Local SDK version published with DaveBrain:
 
-- confirm model-install command, endpoint address, request format, and
-  response schema for Whisper Tiny;
+- confirm model download/load behavior, the in-memory PCM request format, and
+  response schema for Nemotron Speech;
 - measure cold and warm transcription latency for 5-, 15-, and 30-second
   clips on the Pentium J4205;
 - choose the smallest acceptable queue capacity and command timeout from those
@@ -1024,7 +1023,7 @@ measured CPU, memory, disk, and latency budget over the soak period.
 | Risk or open decision | Mitigation |
 |---|---|
 | Foundry Local API/model behavior differs by installed version | Complete Phase 0 compatibility spike, encapsulate it behind `ITranscriptionService`, and document the verified version/configuration. |
-| Whisper Tiny accuracy is insufficient for room/device names | Start with unique short names and aliases, record failed/ambiguous text outcomes, and evaluate vocabulary prompting or a larger local model only after measuring hardware impact. |
+| Nemotron Speech accuracy is insufficient for room/device names | Start with unique short names and aliases, record failed/ambiguous text outcomes, and evaluate vocabulary prompting or a larger local model only after measuring hardware impact. |
 | Continuous listening produces false positives or clips speech | Tune VAD with recordings from real rooms, retain pre-roll, enforce a silence gap and max length, and make thresholds diagnosable/configurable per Ear. |
 | Hue vendor API differences or firmware upgrades break integration | Isolate protocol code, store stable resource IDs, use the supplied docs plus a physical bridge verification test, and provide typed adapter errors. |
 | Internal identity configuration, signing key, or roles are unavailable or incorrect | Include OIDC/OAuth setup in Phase 0, require successful local account, discovery/JWKS, signing-certificate, and token checks for readiness, fail closed, document administrator provisioning/key rotation, and test `Admin`/`User` policies before exposing the service. |
@@ -1036,7 +1035,7 @@ measured CPU, memory, disk, and latency budget over the soak period.
 ## 12. Definition of done for the first releasable system
 
 The first release is complete when a freshly deployed Windows Server DaveBrain
-instance can be configured with a local Foundry Local Whisper Tiny endpoint
+instance can use the packaged Foundry Local Nemotron Speech model
 and Hue bridge, two named locations and mapped lights; registered Windows and
 Linux DaveEar clients can continuously capture and send valid speech segments;
 commands resolve according to their authenticated Ear location or an explicit
