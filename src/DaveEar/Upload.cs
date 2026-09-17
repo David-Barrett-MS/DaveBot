@@ -22,7 +22,7 @@ public sealed class HttpCommandUploader(
             using var certificate = EarClientCertificateLoader.Load(
                 tokens.Credentials.CertificatePem,
                 tokens.Credentials.PrivateKeyPem);
-            using var handler = new HttpClientHandler();
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
             handler.ClientCertificateOptions = ClientCertificateOption.Manual;
             handler.ClientCertificates.Add(certificate);
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(45) };
@@ -88,7 +88,7 @@ public sealed class HttpCommandUploader(
             using var certificate = EarClientCertificateLoader.Load(
                 tokens.Credentials.CertificatePem,
                 tokens.Credentials.PrivateKeyPem);
-            using var handler = new HttpClientHandler();
+            using var handler = new HttpClientHandler { AllowAutoRedirect = false };
             handler.ClientCertificateOptions = ClientCertificateOption.Manual;
             handler.ClientCertificates.Add(certificate);
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };

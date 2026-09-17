@@ -107,9 +107,15 @@ public sealed class DaveEarActivityMonitor(DaveEarActivityLog activityLog) : Bac
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        try
         {
-            activityLog.RecordDisconnectedEars(DateTimeOffset.UtcNow);
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+            {
+                activityLog.RecordDisconnectedEars(DateTimeOffset.UtcNow);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 }

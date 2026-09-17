@@ -220,7 +220,7 @@ public sealed class MtlsAccessTokenProvider
             discovery,
             certificate =>
             {
-                var handler = new HttpClientHandler();
+                var handler = new HttpClientHandler { AllowAutoRedirect = false };
                 handler.ClientCertificateOptions = ClientCertificateOption.Manual;
                 handler.ClientCertificates.Add(certificate);
                 return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };

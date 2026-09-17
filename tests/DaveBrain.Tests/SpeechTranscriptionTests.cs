@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using DaveBrain;
 using DaveHome;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DaveBrain.Tests;
 
@@ -215,6 +216,94 @@ public sealed class FoundryLocalTranscriptionServiceTests
 
     private static HttpResponseMessage JsonResponse(string json) =>
         new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+}
+
+public sealed class FoundryLocalServiceTests
+{
+    [Fact]
+    public async Task StartsAndStopsTheWhisperTinyDaemon()
+    {
+        var commands = new RecordingFoundryCommands();
+        var transcription = new FakeTranscriptionService(_ =>
+            Task.FromResult(TranscriptionResult.Success("unused")));
+        var service = new FoundryLocalService(
+            new FoundryLocalOptions("foundry-test", TimeSpan.FromSeconds(10)),
+            new SpeechTranscriptionOptions(
+                new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
+                SpeechTranscriptionOptions.WhisperTinyModel,
+                TimeSpan.FromSeconds(1),
+                1_000_000,
+                TimeSpan.FromSeconds(30),
+                1,
+                TimeSpan.FromSeconds(1)),
+            commands,
+            transcription,
+            NullLogger<FoundryLocalService>.Instance);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.Equal(
+        [
+            "server start --port 5273 --idle-timeout 0",
+            "model download whisper-tiny",
+            "model load whisper-tiny",
+            "server stop",
+        ],
+        commands.Commands);
+    }
+
+    [Fact]
+    public async Task UnavailableFoundryDoesNotPreventServerStartup()
+    {
+        var commands = new FailingFoundryCommands();
+        var service = new FoundryLocalService(
+            new FoundryLocalOptions("missing-foundry", TimeSpan.FromSeconds(10)),
+            new SpeechTranscriptionOptions(
+                new Uri("http://127.0.0.1:5273/v1/audio/transcriptions"),
+                SpeechTranscriptionOptions.WhisperTinyModel,
+                TimeSpan.FromSeconds(1),
+                1_000_000,
+                TimeSpan.FromSeconds(30),
+                1,
+                TimeSpan.FromSeconds(1)),
+            commands,
+            new FakeTranscriptionService(_ => Task.FromResult(TranscriptionResult.Success("unused"))),
+            NullLogger<FoundryLocalService>.Instance);
+
+        await service.StartAsync(CancellationToken.None);
+
+        Assert.Equal(1, commands.Attempts);
+    }
+
+    private sealed class RecordingFoundryCommands : IFoundryLocalCommandRunner
+    {
+        public List<string> Commands { get; } = [];
+
+        public Task RunAsync(
+            string executable,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            Commands.Add(string.Join(' ', arguments));
+            return Task.CompletedTask;
+        }
+
+    }
+
+    private sealed class FailingFoundryCommands : IFoundryLocalCommandRunner
+    {
+        public int Attempts { get; private set; }
+
+        public Task RunAsync(
+            string executable,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            Attempts++;
+            throw new InvalidOperationException("Foundry Local is not installed.");
+        }
+    }
 }
 
 public sealed class SpeechTranscriptionQueueTests

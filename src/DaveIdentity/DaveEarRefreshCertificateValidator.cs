@@ -41,6 +41,8 @@ public sealed class DaveEarRefreshCertificateValidator(
             context.Reject(
                 OpenIddictConstants.Errors.InvalidGrant,
                 "The DaveEar client certificate is not valid for this refresh token.");
+            return;
         }
+
     }
 }

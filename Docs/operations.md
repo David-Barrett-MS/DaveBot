@@ -53,7 +53,9 @@ to enroll again.
 ## Local speech transcription
 
 DaveBrain sends `POST /api/v1/speech-commands` audio only to the configured
-Foundry Local OpenAI-compatible transcription endpoint. The default endpoint is
+Foundry Local OpenAI-compatible transcription endpoint. DaveBrain starts and
+stops the Foundry Local daemon, downloads and loads only `whisper-tiny`, and
+keeps the daemon active while DaveBrain is running. The default endpoint is
 `http://127.0.0.1:5273/v1/audio/transcriptions`; startup rejects any endpoint
 that is not `localhost` or an IP loopback address. It also rejects every model
 name except `whisper-tiny`. There is no cloud, alternate-model, chat, or
@@ -62,12 +64,15 @@ natural-language fallback.
 Configure `DaveBot:SpeechTranscription` with the loopback endpoint and bounded
 timeout, upload/duration, and queue values. The defaults allow a 1 MB, mono
 16 kHz, 16-bit PCM WAV of at most 30 seconds and one worker with two waiting
-items. `/health` returns HTTP 503 and a safe Foundry/Whisper dependency code
-when the local endpoint or model is unavailable; `/health/live` only reports
-whether DaveBrain is running. Audio is held only in the bounded in-memory queue
-for the request. Multipart buffering is explicitly memory-only within the
-configured body limit, so raw audio is never written to temporary storage or
-otherwise persisted.
+items. Set `DaveBot:FoundryLocal:Executable` to the machine-wide `foundry`
+executable path when it is not on the DaveBrain service account's `PATH`.
+If Foundry Local or Whisper Tiny cannot become ready, DaveBrain logs the
+startup failure and continues serving its administrative UI; `/health` and
+speech requests return a safe 503 dependency result until it is available.
+`/health/live` only reports whether DaveBrain is running. Audio is held only
+in the bounded in-memory queue for the request. Multipart buffering is
+explicitly memory-only within the configured body limit, so raw audio is never
+written to temporary storage or otherwise persisted.
 
 ## Self-signed certificate
 

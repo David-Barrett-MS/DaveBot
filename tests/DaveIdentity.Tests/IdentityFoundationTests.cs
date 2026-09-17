@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Security.Claims;
 using DaveIdentity;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
@@ -135,7 +134,7 @@ public sealed class IdentityFoundationTests : IDisposable
     }
 
     [Fact]
-    public async Task MtlsBindingRequiresMatchingTokenCertificateAndEar()
+    public async Task MtlsBindingRequiresActiveMatchingEarCertificate()
     {
         var persistence = new JsonSnapshotIdentityPersistence(Path.Combine(_directory, "identity.json"));
         var stateStore = new IdentityStateStore(persistence);
@@ -155,16 +154,12 @@ public sealed class IdentityFoundationTests : IDisposable
             "administrator-subject",
             request.CreateSigningRequestPem());
         using var certificate = X509Certificate2.CreateFromPem(enrolled.CertificatePem);
-        var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(
-                "cnf",
-                $$"""{"x5t#S256":"{{enrolled.Ear.MtlsCertificateThumbprint}}"}""")]));
         var validator = new MtlsCertificateBindingValidator(enrollment);
 
-        Assert.True(await validator.IsValidAsync(enrolled.Ear.Id, principal, certificate));
+        Assert.True(await validator.IsValidAsync(enrolled.Ear.Id, certificate));
 
         await enrollment.RevokeAsync(enrolled.Ear.Id);
-        Assert.False(await validator.IsValidAsync(enrolled.Ear.Id, principal, certificate));
+        Assert.False(await validator.IsValidAsync(enrolled.Ear.Id, certificate));
     }
 
     [Fact]

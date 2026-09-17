@@ -2,7 +2,9 @@ using DaveBrain;
 using DaveHome;
 using DaveIdentity;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
@@ -24,6 +26,8 @@ var stateDirectory = builder.Configuration["DaveBot:StateDirectory"]
 var issuer = new Uri(builder.Configuration["DaveIdentity:Issuer"] ?? "https://brain.daves.tips");
 var speechOptions = SpeechTranscriptionOptions.FromConfiguration(builder.Configuration);
 speechOptions.Validate();
+var foundryOptions = FoundryLocalOptions.FromConfiguration(builder.Configuration);
+foundryOptions.Validate();
 var philipsAirPlusOptions = new PhilipsAirPlusOptions();
 var blinkOptions = new BlinkOptions();
 var earMtlsPort = builder.Configuration.GetValue<int?>("DaveBot:EarMtlsPort") ?? 8443;
@@ -110,11 +114,14 @@ builder.Services.AddSingleton<IDeviceStateSource>(provider => provider.GetRequir
 builder.Services.AddSingleton<IHueSwitchEventSource>(provider => provider.GetRequiredService<HueSwitchStateSource>());
 builder.Services.AddSingleton<ICommandProcessor, CommandProcessor>();
 builder.Services.AddSingleton(speechOptions);
+builder.Services.AddSingleton(foundryOptions);
+builder.Services.AddSingleton<IFoundryLocalCommandRunner, FoundryLocalCommandRunner>();
 builder.Services.AddSingleton<WavAudioValidator>();
 builder.Services.AddHttpClient<ITranscriptionService, FoundryLocalTranscriptionService>(client =>
 {
     client.Timeout = Timeout.InfiniteTimeSpan;
 });
+builder.Services.AddHostedService<FoundryLocalService>();
 builder.Services.AddSingleton<SpeechTranscriptionQueue>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<SpeechTranscriptionQueue>());
 builder.Services.AddHostedService<HueReconciliationService>();
@@ -188,7 +195,14 @@ app.Use(async (context, next) =>
 });
 app.Use(async (context, next) =>
 {
-    if (context.User.HasClaim("must_change_password", "true") &&
+    if (!context.Request.Path.StartsWithSegments("/api") &&
+        context.User.Identities.Any(identity =>
+            identity.IsAuthenticated &&
+            string.Equals(
+                identity.AuthenticationType,
+                CookieAuthenticationDefaults.AuthenticationScheme,
+                StringComparison.Ordinal)) &&
+        context.User.HasClaim("must_change_password", "true") &&
         !context.Request.Path.StartsWithSegments("/Identity/ChangePassword") &&
         !context.Request.Path.StartsWithSegments("/Identity/Logout"))
     {
@@ -199,6 +213,9 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseAuthorization();
+IResult ForbidApi() => Results.Forbid(
+    new AuthenticationProperties(),
+    [OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme]);
 app.Use(async (context, next) =>
 {
     if (context.User.IsInRole("Admin") &&
@@ -344,7 +361,7 @@ app.MapPost(
             !user.HasScope("davebrain.ear.enroll") ||
             !await users.IsActiveAdministratorAsync(userId, cancellationToken))
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         var result = await enrollment.EnrollAsync(
@@ -371,14 +388,13 @@ app.MapPost(
         ClaimsPrincipal user,
         IdentityStateStore identityState,
         MtlsCertificateBindingValidator certificateBinding,
-        DaveIdentityOptions identityOptions,
         ICommandProcessor commandProcessor,
         DaveEarActivityLog earActivity,
         CancellationToken cancellationToken) =>
     {
         if (request.EarId == Guid.Empty || !user.HasScope("davebrain.ear.command"))
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         var ear = await EarRequestAuthorization.FindAuthorizedEarAsync(
@@ -387,12 +403,11 @@ app.MapPost(
             user,
             identityState,
             certificateBinding,
-            identityOptions,
             earMtlsPort,
             cancellationToken);
         if (ear is null)
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         earActivity.RecordConnected(ear);
@@ -415,14 +430,13 @@ app.MapPost(
         ClaimsPrincipal user,
         IdentityStateStore identityState,
         MtlsCertificateBindingValidator certificateBinding,
-        DaveIdentityOptions identityOptions,
         EarEnrollmentService enrollment,
         DaveEarActivityLog earActivity,
         CancellationToken cancellationToken) =>
     {
         if (!user.HasScope("davebrain.ear.command"))
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         var ear = await EarRequestAuthorization.FindAuthorizedEarAsync(
@@ -431,12 +445,11 @@ app.MapPost(
             user,
             identityState,
             certificateBinding,
-            identityOptions,
             earMtlsPort,
             cancellationToken);
         if (ear is null)
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         await enrollment.RecordHeartbeatAsync(earId, cancellationToken);
@@ -454,7 +467,6 @@ app.MapPost(
         ClaimsPrincipal user,
         IdentityStateStore identityState,
         MtlsCertificateBindingValidator certificateBinding,
-        DaveIdentityOptions identityOptions,
         SpeechTranscriptionOptions options,
         WavAudioValidator wavValidator,
         SpeechTranscriptionQueue transcriptionQueue,
@@ -498,7 +510,7 @@ app.MapPost(
         if (!Guid.TryParse(form["earId"], out var earId) ||
             !user.HasScope("davebrain.ear.command"))
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         var ear = await EarRequestAuthorization.FindAuthorizedEarAsync(
@@ -507,12 +519,11 @@ app.MapPost(
             user,
             identityState,
             certificateBinding,
-            identityOptions,
             earMtlsPort,
             cancellationToken);
         if (ear is null)
         {
-            return Results.Forbid();
+            return ForbidApi();
         }
 
         earActivity.RecordConnected(ear);
@@ -715,30 +726,49 @@ internal static class EarRequestAuthorization
         ClaimsPrincipal user,
         IdentityStateStore identityState,
         MtlsCertificateBindingValidator certificateBinding,
-        DaveIdentityOptions identityOptions,
         int earMtlsPort,
         CancellationToken cancellationToken)
     {
-        if (!IsMtlsListener(httpContext, earMtlsPort))
+        var logger = httpContext.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("DaveEarAuthorization");
+        EarRecord? Reject(string reason)
         {
+            logger.LogWarning(
+                "DaveEar mTLS authorization rejected for Ear {EarId}: {Reason}.",
+                earId,
+                reason);
             return null;
         }
 
+        if (!IsMtlsListener(httpContext, earMtlsPort))
+        {
+            return Reject("request did not arrive on the mTLS listener");
+        }
+
         var ear = await identityState.FindEarAsync(earId, cancellationToken);
+        if (ear is null)
+        {
+            return Reject("Ear registration was not found");
+        }
+
         var certificate = await httpContext.Connection.GetClientCertificateAsync(cancellationToken);
+        if (certificate is null)
+        {
+            return Reject("client certificate was not presented");
+        }
+
         var subject = user.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
-        var clientId = user.FindFirst("client_id")?.Value;
-        var tokenIssuer = user.FindFirst("iss")?.Value;
-        return ear is null || certificate is null ||
-            !string.Equals(ear.OAuthIssuer.TrimEnd('/'), identityOptions.Issuer.AbsoluteUri.TrimEnd('/'),
-                StringComparison.Ordinal) ||
-            !string.Equals(tokenIssuer?.TrimEnd('/'), ear.OAuthIssuer.TrimEnd('/'),
-                StringComparison.Ordinal) ||
-            !string.Equals(subject, ear.OAuthSubject, StringComparison.Ordinal) ||
-            !string.Equals(clientId, ear.OAuthClientId, StringComparison.Ordinal) ||
-            !await certificateBinding.IsValidAsync(earId, user, certificate, cancellationToken)
-            ? null
-            : ear;
+        if (!string.Equals(subject, ear.OAuthSubject, StringComparison.Ordinal))
+        {
+            return Reject("token subject does not match the Ear registration");
+        }
+        if (!await certificateBinding.IsValidAsync(earId, certificate, cancellationToken))
+        {
+            return Reject("token certificate confirmation or client certificate binding is invalid");
+        }
+
+        return ear;
     }
 }
 
