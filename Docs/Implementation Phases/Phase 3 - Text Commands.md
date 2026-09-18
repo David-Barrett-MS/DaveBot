@@ -7,7 +7,7 @@ Both future speech text and the Admin diagnostic form use the same command
 processor; there is no separate parsing path.
 
 This phase must not invoke a model. Command parsing, responses, and automation
-are custom deterministic code; the only planned model use is Nemotron Speech
+are custom deterministic code; the only planned model use is Whisper Base
 speech transcription in Phase 4.
 
 ## Prerequisites

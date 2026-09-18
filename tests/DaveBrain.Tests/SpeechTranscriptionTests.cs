@@ -8,17 +8,34 @@ namespace DaveBrain.Tests;
 public sealed class WavAudioValidatorTests
 {
     [Fact]
-    public void OtherModelsAreRejected()
+    public void OnlySupportedModelsAreAccepted()
     {
-        var options = new SpeechTranscriptionOptions(
-            "whisper-tiny",
+        foreach (var model in new[]
+                 {
+                     SpeechTranscriptionOptions.WhisperTinyModel,
+                     SpeechTranscriptionOptions.WhisperTinyEnglishModel,
+                     SpeechTranscriptionOptions.WhisperBaseModel,
+                     SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
+                 })
+        {
+            new SpeechTranscriptionOptions(
+                model,
+                TimeSpan.FromSeconds(1),
+                1_000_000,
+                TimeSpan.FromSeconds(30),
+                1,
+                TimeSpan.FromSeconds(1))
+                .Validate();
+        }
+
+        Assert.Throws<InvalidOperationException>(() => new SpeechTranscriptionOptions(
+            "unsupported-model",
             TimeSpan.FromSeconds(1),
             1_000_000,
             TimeSpan.FromSeconds(30),
             1,
-            TimeSpan.FromSeconds(1));
-
-        Assert.Throws<InvalidOperationException>(options.Validate);
+            TimeSpan.FromSeconds(1))
+            .Validate());
     }
 
     [Fact]
@@ -114,7 +131,7 @@ public sealed class WavAudioValidatorTests
         int maximumBytes = 1_000_000,
         TimeSpan? maximumDuration = null) =>
         new(new SpeechTranscriptionOptions(
-            SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
+            SpeechTranscriptionOptions.WhisperBaseModel,
             TimeSpan.FromSeconds(1),
             maximumBytes,
             maximumDuration ?? TimeSpan.FromSeconds(30),
@@ -222,7 +239,7 @@ public sealed class FoundryLocalSdkTranscriptionIntegrationTests
     public async Task SuppliedSpeechFixtureTranscribesTheCompleteCommand()
     {
         var options = new SpeechTranscriptionOptions(
-            SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
+            SpeechTranscriptionOptions.WhisperBaseModel,
             TimeSpan.FromSeconds(60),
             1_000_000,
             TimeSpan.FromSeconds(30),
@@ -237,6 +254,10 @@ public sealed class FoundryLocalSdkTranscriptionIntegrationTests
             "Sample Speech",
             "Turn Lounge Lights On.wav");
         var wavAudio = await File.ReadAllBytesAsync(fixturePath);
+        var temporaryAudioDirectory = Path.Combine(Path.GetTempPath(), "DaveBot", "speech");
+        var temporaryFilesBefore = Directory.Exists(temporaryAudioDirectory)
+            ? Directory.EnumerateFiles(temporaryAudioDirectory).Order().ToArray()
+            : [];
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 
         try
@@ -250,6 +271,10 @@ public sealed class FoundryLocalSdkTranscriptionIntegrationTests
         finally
         {
             await service.StopAsync(CancellationToken.None);
+            var temporaryFilesAfter = Directory.Exists(temporaryAudioDirectory)
+                ? Directory.EnumerateFiles(temporaryAudioDirectory).Order().ToArray()
+                : [];
+            Assert.Equal(temporaryFilesBefore, temporaryFilesAfter);
         }
     }
 
@@ -339,7 +364,7 @@ public sealed class SpeechTranscriptionQueueTests
         new(
             transcription,
             new SpeechTranscriptionOptions(
-                SpeechTranscriptionOptions.NemotronSpeechStreamingEnglishModel,
+                SpeechTranscriptionOptions.WhisperTinyModel,
                 TimeSpan.FromSeconds(1),
                 1_000_000,
                 TimeSpan.FromSeconds(30),

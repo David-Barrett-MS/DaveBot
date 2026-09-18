@@ -44,7 +44,7 @@ DaveBrain (Windows Service)
   |-- DaveEar mTLS HTTPS, port 8443
   |-- DaveIdentity: local accounts and OAuth/OIDC authority
   |-- DaveHome: commands, locations, devices, actions, triggers, Hue adapter
-  |-- Foundry Local native SDK: in-process Nemotron Speech transcription
+  |-- Foundry Local native SDK: in-process Whisper Base transcription
   |-- Philips Hue Bridge: CLIP v2 over the private LAN
   `-- Philips Air+: account-authorized HTTPS/MQTT over TLS
 
@@ -55,15 +55,18 @@ DaveEar (Windows/Linux)
 
 The Foundry Local native SDK is bundled with DaveBrain's Windows publish
 output. It does not use a separate daemon, loopback listener, or machine-wide
-`foundry.exe` installation. The SDK downloads the Nemotron Speech model to the service
-identity's model cache on first use and runs inference in process. DaveBrain
+`foundry.exe` installation. The SDK downloads the configured allow-listed speech
+model, Whisper Base by default, to the service identity's model cache on first
+use and runs inference in process. DaveBrain
 binds its public interface to the private LAN and rejects unencrypted traffic
 outside an explicit development profile.
 
-Nemotron Speech is the only model in the DaveBot runtime and is used solely to
-transcribe speech. Command parsing, command responses, and automation are
-custom deterministic code; no chat, natural-language, or other general-purpose
-model is run.
+Whisper Base is the active model in the DaveBot runtime and is used solely to
+transcribe speech. Its SDK invocation receives a short-lived private WAV file
+that is deleted immediately afterwards. Nemotron Speech streaming is retained
+as a selectable alternate implementation. Command parsing, command responses,
+and automation are custom deterministic code; no chat, natural-language, or
+other general-purpose model is run.
 
 ## Hue event automation
 

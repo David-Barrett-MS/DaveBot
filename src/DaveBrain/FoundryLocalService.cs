@@ -38,7 +38,7 @@ public sealed class FoundryLocalService(
         {
             logger.LogInformation("Initializing the packaged Foundry Local runtime.");
             await runtime.InitializeAsync(startup.Token);
-            logger.LogInformation("Foundry Local is ready with the Nemotron Speech model.");
+            logger.LogInformation("Foundry Local speech model is ready.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

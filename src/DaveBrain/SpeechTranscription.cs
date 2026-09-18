@@ -12,6 +12,9 @@ public sealed record SpeechTranscriptionOptions(
     int QueueCapacity,
     TimeSpan QueueWaitTimeout)
 {
+    public const string WhisperTinyModel = "whisper-tiny";
+    public const string WhisperTinyEnglishModel = "whisper-tiny.en";
+    public const string WhisperBaseModel = "whisper-base";
     public const string NemotronSpeechStreamingEnglishModel = "nemotron-speech-streaming-en-0.6b";
     public const int BytesPerSecond = 32_000;
 
@@ -19,7 +22,7 @@ public sealed record SpeechTranscriptionOptions(
     {
         var section = configuration.GetSection("DaveBot:SpeechTranscription");
         return new SpeechTranscriptionOptions(
-            section["Model"] ?? NemotronSpeechStreamingEnglishModel,
+            section["Model"] ?? WhisperBaseModel,
             TimeSpan.FromSeconds(section.GetValue("TimeoutSeconds", 60)),
             section.GetValue("MaximumRequestBytes", 1_000_000),
             TimeSpan.FromSeconds(section.GetValue("MaximumDurationSeconds", 30)),
@@ -29,10 +32,15 @@ public sealed record SpeechTranscriptionOptions(
 
     public void Validate()
     {
-        if (!string.Equals(Model, NemotronSpeechStreamingEnglishModel, StringComparison.Ordinal))
+        if (!string.Equals(Model, WhisperTinyModel, StringComparison.Ordinal) &&
+            !string.Equals(Model, WhisperTinyEnglishModel, StringComparison.Ordinal) &&
+            !string.Equals(Model, WhisperBaseModel, StringComparison.Ordinal) &&
+            !string.Equals(Model, NemotronSpeechStreamingEnglishModel, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"DaveBot only permits the {NemotronSpeechStreamingEnglishModel} transcription model.");
+                $"DaveBot only permits the {WhisperTinyModel}, {WhisperTinyEnglishModel}, " +
+                $"{WhisperBaseModel}, or " +
+                $"{NemotronSpeechStreamingEnglishModel} transcription models.");
         }
 
         if (Timeout <= TimeSpan.Zero || QueueWaitTimeout <= TimeSpan.Zero ||

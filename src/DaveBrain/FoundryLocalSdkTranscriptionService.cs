@@ -1,5 +1,7 @@
 using Microsoft.AI.Foundry.Local;
 using System.Diagnostics;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace DaveBrain;
 
@@ -98,6 +100,20 @@ public sealed class FoundryLocalSdkTranscriptionService(
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(options.Timeout);
+        if (string.Equals(options.Model, SpeechTranscriptionOptions.WhisperTinyModel,
+                StringComparison.Ordinal) ||
+            string.Equals(options.Model, SpeechTranscriptionOptions.WhisperTinyEnglishModel,
+                StringComparison.Ordinal) ||
+            string.Equals(options.Model, SpeechTranscriptionOptions.WhisperBaseModel,
+                StringComparison.Ordinal))
+        {
+            return await TranscribeWhisperAsync(
+                loadedModel,
+                wavAudio,
+                timeout.Token,
+                cancellationToken);
+        }
+
         var elapsed = Stopwatch.StartNew();
         var stage = "creating the live transcription session";
         var appendedChunks = 0;
@@ -204,6 +220,159 @@ public sealed class FoundryLocalSdkTranscriptionService(
         }
     }
 
+    private async Task<TranscriptionResult> TranscribeWhisperAsync(
+        IModel loadedModel,
+        ReadOnlyMemory<byte> wavAudio,
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
+    {
+        string? temporaryWavPath = null;
+        try
+        {
+            temporaryWavPath = await CreateTemporaryWavAsync(
+                wavAudio,
+                cancellationToken);
+#pragma warning disable CS0618
+            var audioClient = await loadedModel.GetAudioClientAsync(cancellationToken);
+#pragma warning restore CS0618
+            audioClient.Settings.Language = "en";
+            audioClient.Settings.Temperature = 0;
+            var response = await audioClient.TranscribeAudioAsync(temporaryWavPath, cancellationToken);
+            var transcript = CanonicalizeCommandTranscript(response.Text);
+            if (!response.Successful || string.IsNullOrEmpty(transcript))
+            {
+                logger.LogWarning("Foundry Local returned no Whisper transcription result.");
+                return new TranscriptionResult(TranscriptionStatus.NoSpeech);
+            }
+
+            return TranscriptionResult.Success(
+                transcript.Length <= 500 ? transcript : transcript[..500]);
+        }
+        catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
+        {
+            return new TranscriptionResult(TranscriptionStatus.Canceled);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new TranscriptionResult(TranscriptionStatus.TimedOut);
+        }
+        catch (FoundryLocalException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Foundry Local could not transcribe the temporary WAV (error code: {ErrorCode}).",
+                exception.ErrorCode);
+            return new TranscriptionResult(TranscriptionStatus.Failed);
+        }
+        catch (IOException exception)
+        {
+            logger.LogWarning(exception, "Foundry Local temporary WAV processing failed.");
+            return new TranscriptionResult(TranscriptionStatus.Failed);
+        }
+        finally
+        {
+            if (temporaryWavPath is not null)
+            {
+                File.Delete(temporaryWavPath);
+            }
+        }
+    }
+
+    private static async Task<string> CreateTemporaryWavAsync(
+        ReadOnlyMemory<byte> wavAudio,
+        CancellationToken cancellationToken)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "DaveBot", "speech");
+        EnsurePrivateDirectory(directory);
+        var path = Path.Combine(directory, $"whisper-{Guid.NewGuid():N}.wav");
+        var completed = false;
+        try
+        {
+            await using var output = new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.Read,
+                bufferSize: 81_920,
+                FileOptions.Asynchronous);
+            EnsurePrivateFile(path);
+            await output.WriteAsync(wavAudio, cancellationToken);
+            await output.FlushAsync(cancellationToken);
+            output.Flush(flushToDisk: true);
+            completed = true;
+            return path;
+        }
+
+        finally
+        {
+            if (!completed && File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    private static string? CanonicalizeCommandTranscript(string? transcript)
+    {
+        var trimmed = transcript?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return trimmed;
+        }
+
+        foreach (var verb in new[] { "turn", "set", "are" })
+        {
+            var prefix = $"{verb} the ";
+            if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{trimmed[..verb.Length]} {trimmed[prefix.Length..]}";
+            }
+        }
+
+        return trimmed;
+    }
+
+    private static void EnsurePrivateDirectory(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        if (OperatingSystem.IsWindows())
+        {
+            var security = new DirectorySecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                WindowsIdentity.GetCurrent().User
+                    ?? throw new InvalidOperationException("A Windows service identity is required."),
+                FileSystemRights.FullControl,
+                AccessControlType.Allow));
+            new DirectoryInfo(directory).SetAccessControl(security);
+        }
+        else
+        {
+            File.SetUnixFileMode(
+                directory,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    private static void EnsurePrivateFile(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                WindowsIdentity.GetCurrent().User
+                    ?? throw new InvalidOperationException("A Windows service identity is required."),
+                FileSystemRights.FullControl,
+                AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+        }
+        else
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
     internal static string? CombineTranscriptCandidates(IEnumerable<string?> candidates)
     {
         string? transcript = null;
@@ -261,7 +430,7 @@ public sealed class FoundryLocalSdkTranscriptionService(
         {
             return await loadedModel.IsLoadedAsync(cancellationToken)
                 ? new TranscriptionDependencyStatus(true, "ready")
-                : new TranscriptionDependencyStatus(false, "nemotron-speech-unavailable");
+                : new TranscriptionDependencyStatus(false, "speech-model-unavailable");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

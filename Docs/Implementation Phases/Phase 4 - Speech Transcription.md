@@ -3,11 +3,12 @@
 ## Objective
 
 Add a bounded, local speech-command path that accepts valid WAV audio from an
-authenticated DaveEar, transcribes it with Foundry Local Nemotron Speech, and
+authenticated DaveEar, transcribes it with Foundry Local Whisper Base, and
 hands the result to the Phase 3 command processor.
 
-Nemotron Speech is the sole model use in DaveBot and is limited to transcription;
-the command processor and its responses remain custom deterministic code.
+Whisper Base is the active model use in DaveBot and is limited to
+transcription; the command processor and its responses remain custom
+deterministic code.
 
 ## Prerequisites
 
@@ -21,15 +22,15 @@ the command processor and its responses remain custom deterministic code.
 
 1. Define `ITranscriptionService` in DaveBrain with a packaged Foundry Local
    native SDK implementation and deterministic fake test implementation.
-2. Initialize Foundry Local in process, download/load only
-   `nemotron-speech-streaming-en-0.6b`, and
-   pass the validated WAV's raw PCM payload to the SDK's live-transcription
-   session in 100 ms chunks, accepting only final results from its in-memory
-   stream.
-3. Explicitly select Nemotron Speech; never fall back to a cloud service or a
+2. Initialize Foundry Local in process and download/load the configured
+   allow-listed model. The default `whisper-base` path gives the SDK a private
+   temporary WAV file and deletes it immediately after transcription; the
+   retained `nemotron-speech-streaming-en-0.6b` path streams validated raw PCM
+   in 100 ms chunks and accepts only final results.
+3. Explicitly select Whisper Base; never fall back to a cloud service or a
    different local model without an explicit configuration change.
 4. Make readiness fail with a clear dependency result when the packaged SDK or
-   Nemotron Speech model is unavailable.
+   configured speech model is unavailable.
 
 ### 2. Audio intake and queue
 
@@ -42,8 +43,9 @@ the command processor and its responses remain custom deterministic code.
    oversized, or overlong audio before it reaches Foundry Local.
 4. Use one bounded transcription worker and a small bounded queue. Return a
    correlated retry/overload response rather than retaining unbounded requests.
-5. Keep audio memory-only through transcription. Do not write uploads to
-   temporary or persistent storage; diagnostic retention remains disabled.
+5. Keep audio in memory except for Whisper's uniquely named,
+   service-identity-private temporary WAV during its SDK call. Delete that file
+   immediately afterwards; diagnostic retention remains disabled.
 
 ### 3. Command result
 
@@ -73,16 +75,18 @@ the command processor and its responses remain custom deterministic code.
 - [x] Invalid/oversized requests do not consume transcription capacity.
 - [x] An unavailable Foundry SDK/model is visible through readiness and a safe
       command result.
-- [x] Temporary audio is never persisted; bounded in-memory audio becomes
-      collectible when its request completes or is cancelled.
+- [x] Temporary audio is never retained; the private Whisper WAV is deleted
+      when its request completes or is cancelled.
 
 ## Implemented configuration and API
 
 `DaveBot:SpeechTranscription` configures the model, timeout, WAV
-upload/duration limits, and queue bounds. The only accepted model value is
-`nemotron-speech-streaming-en-0.6b`; invalid values fail startup. DaveBrain bundles the Foundry
-Local SDK through NuGet, so it does not require a Foundry CLI, loopback HTTP
-endpoint, or separate daemon. On its first start, the SDK downloads the model
+upload/duration limits, and queue bounds. Accepted values are `whisper-tiny`,
+`whisper-tiny.en`, `whisper-base` (the default), and
+`nemotron-speech-streaming-en-0.6b`; invalid values fail startup. DaveBrain
+bundles the Foundry Local SDK through NuGet, so it does not require a Foundry
+CLI, loopback HTTP endpoint, or separate daemon. On its first start, the SDK
+downloads the model
 to the DaveBrain service account's model cache. Defaults are a 1 MB upload,
 30-second WAV, 60-second Foundry timeout, and one worker with two queued
 requests.

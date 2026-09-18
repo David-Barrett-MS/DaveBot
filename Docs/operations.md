@@ -53,24 +53,25 @@ to enroll again.
 
 DaveBrain ships the Foundry Local native SDK as a NuGet dependency. It does
 not require the Foundry Local CLI, a separate daemon, a loopback listener, or
-an installed `foundry.exe`. On first startup, the SDK downloads and loads only
-`nemotron-speech-streaming-en-0.6b` using the DaveBrain service account's
-model cache; later startups reuse that cache. This is the Foundry Local model
-that supports DaveBot's in-memory streaming PCM transcription path. There is
-no cloud inference, alternate model, chat, or natural-language fallback.
+an installed `foundry.exe`. By default, it downloads and loads `whisper-base`
+using the DaveBrain service account's model cache; later startups reuse that
+cache. Whisper receives a private, uniquely named temporary WAV file that is
+deleted immediately after each transcription. The selectable
+`nemotron-speech-streaming-en-0.6b` in-memory streaming path remains available
+for later evaluation. There is no cloud inference, chat, or natural-language
+fallback.
 
 Configure `DaveBot:SpeechTranscription` with bounded timeout, upload/duration,
 and queue values. The defaults allow a 1 MB, mono 16 kHz, 16-bit PCM WAV of at
 most 30 seconds and one worker with two waiting items. If Foundry Local or
-the Nemotron Speech model cannot become ready, DaveBrain logs the startup failure and
+the configured speech model cannot become ready, DaveBrain logs the startup failure and
 continues serving its administrative UI; `/health` and speech requests return
 a safe 503 dependency result until it is available. `/health/live` only
 reports whether DaveBrain is running. Audio is held only in the bounded
-in-memory queue for the request. Its validated raw PCM payload is passed to
-the SDK's live-transcription session in 100 ms chunks and final results are
-read from its in-memory stream; incremental token fragments are not accepted
-as commands. Audio is never written to temporary storage or otherwise
-persisted.
+in-memory queue for the request. Whisper receives a temporary private WAV that
+is deleted after the SDK returns. Nemotron receives the validated raw PCM
+payload in 100 ms chunks and accepts only final stream results. Audio is never
+retained after transcription completes.
 
 Foundry inference allows 60 seconds, with a 65-second server queue-processing
 budget. DaveEar allows 75 seconds for its speech upload so it does not abandon
@@ -269,8 +270,9 @@ client certificate, or private key between devices.
 
 DaveEar is an audio capture and upload agent. It does not contain a chat,
 natural-language, or general-purpose model. DaveBrain is the only component
-that transcribes submitted PCM WAV audio, using its in-process
-`nemotron-speech-streaming-en-0.6b` Foundry Local configuration.
+that transcribes submitted PCM WAV audio, using its in-process `whisper-base`
+Foundry Local configuration. The retained
+`nemotron-speech-streaming-en-0.6b` alternative is not active by default.
 
 Register each machine after installing the DaveBrain TLS trust anchor:
 

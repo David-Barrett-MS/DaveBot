@@ -128,7 +128,7 @@ public static class TextCommandParser
         "^turn lights (?<action>on|off)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex TurnPattern = new(
-        "^turn (?<location>.+) lights (?<action>on|off)$",
+        "^turn (?:the )?(?<location>.+) lights (?<action>on|off)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex BrightnessPattern = new(
         "^set (?<location>.+) lights to (?<brightness>\\d{1,3})(?:\\s*%| percent)$",

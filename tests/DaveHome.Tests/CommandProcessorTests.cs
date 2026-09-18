@@ -10,6 +10,7 @@ public sealed class CommandProcessorTests
         var brightness = TextCommandParser.Parse("  SET, Kitchen lights to 50 %!! ");
         var colour = TextCommandParser.Parse("set kitchen lights to BLUE");
         var defaultTurn = TextCommandParser.Parse("turn lights off");
+        var turnWithArticle = TextCommandParser.Parse("turn the lounge lights on");
 
         Assert.Equal("set kitchen lights to 50 %", brightness.Command.Transcript);
         Assert.Equal(TextCommandIntent.SetBrightness, brightness.Intent);
@@ -18,6 +19,8 @@ public sealed class CommandProcessorTests
         Assert.Equal(new DeviceColour(0.168, 0.041), colour.Colour);
         Assert.Equal(TextCommandIntent.LightsOff, defaultTurn.Intent);
         Assert.Null(defaultTurn.LocationName);
+        Assert.Equal(TextCommandIntent.LightsOn, turnWithArticle.Intent);
+        Assert.Equal("lounge", turnWithArticle.LocationName);
     }
 
     [Fact]
