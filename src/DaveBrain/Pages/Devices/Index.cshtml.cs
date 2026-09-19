@@ -32,6 +32,9 @@ public sealed class IndexModel(
 
     public string? SnapshotDeviceName { get; private set; }
 
+    public bool IsLightsPage =>
+        string.Equals(HttpContext.Request.Path.Value, "/Devices/Lights", StringComparison.OrdinalIgnoreCase);
+
     public void OnGet(string? locationFilter, string? typeFilter)
     {
         SetFilters(locationFilter, typeFilter);
@@ -136,7 +139,7 @@ public sealed class IndexModel(
             await homeStateStore.UpdateAsync(state =>
             {
                 if (!state.DevicesById.TryGetValue(deviceId, out var device) ||
-                    !IsManagedDevice(device))
+                    !CanManageDevice(device))
                 {
                     throw new InvalidOperationException("The device does not exist.");
                 }
@@ -179,7 +182,7 @@ public sealed class IndexModel(
             await homeStateStore.UpdateAsync(state =>
             {
                 if (!state.DevicesById.TryGetValue(deviceId, out var device) ||
-                    !IsManagedDevice(device))
+                    !CanManageDevice(device))
                 {
                     throw new InvalidOperationException("The device does not exist.");
                 }
@@ -379,9 +382,7 @@ public sealed class IndexModel(
 
     private void LoadDevices()
     {
-        Devices = hueHubs.GetMappedHueDevices()
-            .Concat(airPlus.GetMappedDevices())
-            .Concat(blink.GetMappedDevices())
+        Devices = GetVisibleManagedDevices()
             .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         Locations = homeStateStore.Current.LocationsById.Values
@@ -412,10 +413,18 @@ public sealed class IndexModel(
     }
 
     private Device? GetManagedDevice(Guid deviceId) =>
+        GetVisibleManagedDevices()
+            .SingleOrDefault(candidate => candidate.Id == deviceId);
+
+    private IEnumerable<Device> GetVisibleManagedDevices() =>
         hueHubs.GetMappedHueDevices()
             .Concat(airPlus.GetMappedDevices())
             .Concat(blink.GetMappedDevices())
-            .SingleOrDefault(candidate => candidate.Id == deviceId);
+            .Where(device => !IsLightsPage || device.DeviceType == "hue.light");
+
+    private bool CanManageDevice(Device device) =>
+        IsManagedDevice(device) &&
+        (!IsLightsPage || device.DeviceType == "hue.light");
 
     private static bool IsManagedDevice(Device device) =>
         device.DeviceType is "hue.light" or "hue.switch" or "hue.motion-sensor" or "philips.airplus" or "blink.camera";

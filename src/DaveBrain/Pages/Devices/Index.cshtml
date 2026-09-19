@@ -2,16 +2,18 @@
 @model DaveBrain.Pages.Devices.IndexModel
 @inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
 @{
-    ViewData["Title"] = "Devices";
+    ViewData["Title"] = Model.IsLightsPage ? "Lights" : "Devices";
     var liveViewRequestToken = Antiforgery.GetAndStoreTokens(HttpContext).RequestToken;
 }
 
-<h1>Devices</h1>
-<div asp-validation-summary="ModelOnly" class="text-danger"></div>
-@if (Model.Result is not null)
-{
-    <p><strong>@Model.Result.Status</strong>@(Model.Result.Detail is null ? string.Empty : $": {Model.Result.Detail}")</p>
-}
+<h1>@ViewData["Title"]</h1>
+<div id="device-update-status" role="status" aria-live="polite">
+    <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+    @if (Model.Result is not null)
+    {
+        <p><strong>@Model.Result.Status</strong>@(Model.Result.Detail is null ? string.Empty : $": {Model.Result.Detail}")</p>
+    }
+</div>
 
 @if (Model.Devices.Count == 0)
 {
@@ -87,15 +89,17 @@ else
                 <th scope="col">Action</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="device-results">
         @foreach (var device in Model.Devices)
         {
             var locationFilter = device.LocationId?.ToString() ?? "unassigned";
             var isHueLight = device.DeviceType == "hue.light";
             var isBlinkCamera = device.DeviceType == "blink.camera";
-            <tr class="device-row" data-location-filter="@locationFilter" data-type-filter="@device.DeviceType">
+            <tr class="device-row" data-device-id="@device.Id"
+                data-location-filter="@locationFilter" data-type-filter="@device.DeviceType">
                 <td>
-                    <form method="post" asp-page-handler="SetEnabled">
+                    <form method="post" asp-page-handler="SetEnabled" data-async-device-update
+                          data-async-focus-selector="input[name='enabled'][type='checkbox']">
                         <input type="hidden" name="deviceId" value="@device.Id" />
                         @if (device.Enabled)
                         {
@@ -113,7 +117,8 @@ else
                 <td>@device.Name</td>
                 <td><code>@device.DeviceType</code></td>
                 <td>
-                    <form method="post" asp-page-handler="UpdateLocation">
+                    <form method="post" asp-page-handler="UpdateLocation" data-async-device-update
+                          data-async-focus-selector="select[name='locationId']">
                         <input type="hidden" name="deviceId" value="@device.Id" />
                         <select name="locationId" aria-label="Location for @device.Name" onchange="this.form.requestSubmit()">
                             @if (device.LocationId is null)
@@ -139,7 +144,9 @@ else
                     </form>
                 </td>
                 <td>
-                    <form method="post" asp-page-handler="UpdateGroups" class="group-membership-form"
+                    <form method="post" asp-page-handler="UpdateGroups"
+                              class="group-membership-form" data-async-device-update
+                              data-async-focus-selector=".group-membership-toggle"
                               data-group-membership-changed="false">
                             <input type="hidden" name="deviceId" value="@device.Id" />
                             @if (Model.Groups.Count == 0)
@@ -149,7 +156,7 @@ else
                             else
                             {
                                 <div class="dropdown">
-                                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle group-membership-toggle" type="button"
                                             data-bs-toggle="dropdown" data-bs-auto-close="outside"
                                             aria-expanded="false" aria-label="Groups for @device.Name">
                                         Groups (@(device.GroupIds?.Count ?? 0))
@@ -182,7 +189,8 @@ else
                     <div class="d-flex flex-wrap gap-1">
                         @if (isHueLight && device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.OnOff))
                         {
-                            <form method="post">
+                            <form method="post" data-async-device-update
+                                  data-async-focus-selector="button[type='submit']">
                                 <input type="hidden" name="deviceId" value="@device.Id" />
                                 <input type="hidden" name="action" value="on" />
                                 <button type="submit" class="btn btn-sm btn-success" title="Turn on"
@@ -190,7 +198,8 @@ else
                                     <span aria-hidden="true">&#x25B6;</span> On
                                 </button>
                             </form>
-                            <form method="post">
+                            <form method="post" data-async-device-update
+                                  data-async-focus-selector="button[type='submit']">
                                 <input type="hidden" name="deviceId" value="@device.Id" />
                                 <input type="hidden" name="action" value="off" />
                                 <button type="submit" class="btn btn-sm btn-secondary" title="Turn off"
@@ -211,7 +220,8 @@ else
                         }
                         @if (Model.CanRead(device))
                         {
-                            <form method="post">
+                            <form method="post" data-async-device-update
+                                  data-async-focus-selector="button[type='submit']">
                                 <input type="hidden" name="deviceId" value="@device.Id" />
                                 <input type="hidden" name="action" value="read" />
                                 <button type="submit" class="btn btn-sm btn-outline-secondary" title="Read current state"
@@ -286,6 +296,7 @@ else
         </div>
     </div>
 
+    <div id="device-action-modals">
     @foreach (var device in Model.Devices)
     {
         var picker = Model.GetColourPickerValue(device.State);
@@ -301,7 +312,7 @@ else
                         @if (device.Capabilities.HasFlag(DaveHome.DeviceCapabilities.FanSpeed))
                         {
                             var fanSpeed = Model.GetFanSpeed(device.State);
-                            <form method="post" class="mb-3">
+                            <form method="post" class="mb-3" data-async-device-update>
                                 <input type="hidden" name="deviceId" value="@device.Id" />
                                 <input type="hidden" name="action" value="set-fan-speed" />
                                 <label class="form-label" for="fan-speed-@device.Id">Fan speed</label>
@@ -335,7 +346,7 @@ else
             <div class="modal fade" id="colour-modal-@device.Id" tabindex="-1" aria-labelledby="colour-modal-label-@device.Id" aria-hidden="true">
                 <div class="modal-dialog">
                     <div class="modal-content">
-                        <form method="post">
+                        <form method="post" data-async-device-update>
                             <div class="modal-header">
                                 <h2 class="modal-title fs-5" id="colour-modal-label-@device.Id">Colour / brightness: @device.Name</h2>
                                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -389,6 +400,7 @@ else
             </div>
         }
     }
+    </div>
 }
 
 @section Scripts {
@@ -540,8 +552,11 @@ else
                 }
             };
 
-            document.querySelectorAll(".blink-live-view-button").forEach(button => {
-                button.addEventListener("click", () => void startLiveView(button));
+            document.addEventListener("click", event => {
+                const button = event.target.closest(".blink-live-view-button");
+                if (button) {
+                    void startLiveView(button);
+                }
             });
             liveViewModal?.addEventListener("hidden.bs.modal", () => void stopLiveView(null, "modal-closed"));
             window.addEventListener("pagehide", () => void stopLiveView(null, "page-unload"));
@@ -592,7 +607,14 @@ else
             const appendFilterToForm = (form, group, parameter) => {
                 const filters = filterCheckboxes(group);
                 const selected = selectedFilterValues(group);
+                const existingFilter = form.querySelector(`input[type="hidden"][name="${parameter}"]`);
                 if (selected.length === filters.length) {
+                    existingFilter?.remove();
+                    return;
+                }
+
+                if (existingFilter) {
+                    existingFilter.value = selected.join(",");
                     return;
                 }
 
@@ -601,6 +623,74 @@ else
                 filter.name = parameter;
                 filter.value = selected.join(",");
                 form.append(filter);
+            };
+
+            const submitDeviceUpdate = async form => {
+                if (form.dataset.asyncSubmitting === "true") {
+                    return;
+                }
+
+                const deviceId = form.querySelector("input[name='deviceId']")?.value ??
+                    form.closest(".device-row")?.dataset.deviceId;
+                const focusSelector = form.dataset.asyncFocusSelector;
+                const originatingModal = form.closest(".modal");
+                const formData = new FormData(form);
+                const controls = form.querySelectorAll("input, select, button");
+                form.dataset.asyncSubmitting = "true";
+                form.setAttribute("aria-busy", "true");
+                controls.forEach(control => {
+                    control.disabled = true;
+                });
+
+                try {
+                    const response = await fetch(form.action, {
+                        method: "POST",
+                        body: formData,
+                        credentials: "same-origin",
+                        headers: { "X-Requested-With": "XMLHttpRequest" }
+                    });
+                    if (!response.ok) {
+                        throw new Error(`The server returned HTTP ${response.status}.`);
+                    }
+
+                    const documentResponse = new DOMParser()
+                        .parseFromString(await response.text(), "text/html");
+                    const updatedResults = documentResponse.getElementById("device-results");
+                    const updatedStatus = documentResponse.getElementById("device-update-status");
+                    const updatedActionModals = documentResponse.getElementById("device-action-modals");
+                    const currentResults = document.getElementById("device-results");
+                    const currentStatus = document.getElementById("device-update-status");
+                    const currentActionModals = document.getElementById("device-action-modals");
+                    if (!updatedResults || !updatedStatus || !updatedActionModals ||
+                        !currentResults || !currentStatus || !currentActionModals) {
+                        throw new Error("The server returned an incomplete device update.");
+                    }
+
+                    if (originatingModal) {
+                        bootstrap.Modal.getInstance(originatingModal)?.hide();
+                    }
+                    currentResults.replaceWith(updatedResults);
+                    currentStatus.replaceWith(updatedStatus);
+                    currentActionModals.replaceWith(updatedActionModals);
+                    updateDeviceFilters();
+
+                    const updatedRow = Array.from(document.querySelectorAll(".device-row"))
+                        .find(row => row.dataset.deviceId === deviceId);
+                    if (focusSelector) {
+                        updatedRow?.querySelector(focusSelector)?.focus({ preventScroll: true });
+                    }
+                } catch {
+                    const status = document.getElementById("device-update-status");
+                    status.textContent = "The device update could not be completed. Please try again.";
+                } finally {
+                    if (form.isConnected) {
+                        form.removeAttribute("aria-busy");
+                        delete form.dataset.asyncSubmitting;
+                        controls.forEach(control => {
+                            control.disabled = false;
+                        });
+                    }
+                }
             };
 
             const rgbToXy = colour => {
@@ -660,6 +750,11 @@ else
 
                 appendFilterToForm(event.target, "location", "locationFilter");
                 appendFilterToForm(event.target, "type", "typeFilter");
+
+                if (event.target.matches("form[data-async-device-update]")) {
+                    event.preventDefault();
+                    void submitDeviceUpdate(event.target);
+                }
             });
 
             document.addEventListener("input", event => {

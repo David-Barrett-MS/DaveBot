@@ -52,6 +52,7 @@ builder.Services.AddRazorPages(options =>
     options.Conventions.AuthorizeFolder("/");
     options.Conventions.AllowAnonymousToPage("/Identity/Login");
     options.Conventions.AllowAnonymousToPage("/Identity/AccessDenied");
+    options.Conventions.AddPageRoute("/Devices/Index", "/Devices/Lights");
 });
 builder.Services.AddAntiforgery();
 builder.Services.Configure<FormOptions>(options =>

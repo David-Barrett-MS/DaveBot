@@ -208,6 +208,71 @@ shutdown closes the socket and tells Blink that the command is done. The
 application never writes video segments, stream metadata, Blink live-view
 tokens, or upstream stream addresses to disk or the administration debug log.
 
+### Blink Android application capability analysis
+
+The locally supplied Blink Home Monitor 59.2 Android bundle
+(`com.immediasemi.android.blink`, version code `29823413`) was inspected
+statically and its live-view DEX was decompiled with Garlic into
+`Docs\Apps\blink-59.2-decompiled\sources`. This is implementation evidence
+for that client version, not a stable or supported Blink API contract. Blink
+can change its private transport, messages, and capability rules without
+notice.
+
+**Two-way audio.** The live-view user interface uses a `TalkWidgetView` with a
+push-to-talk state. Pressing it requests Android `RECORD_AUDIO` permission,
+requests the player's microphone, and notifies the live-view controller;
+releasing it relinquishes the microphone. The view model then calls
+`GeneralCommands.turnMicrophoneOn`.
+
+`BlinkWebRtcLiveViewSessionManager` reads the selected camera's
+`twoWayAudio`, `audioAec`, and `audioPrivacyEnabled` values into
+`LiveViewAudioConfig`, starts an on-demand `WebRtcLiveSession` for the
+camera's Ring device ID, and publishes an audio state. This produces
+two-way-with-AEC, two-way-without-AEC, or listen-only UI states. Its
+`WebRtcGeneralCommands` maps the toggles to typed
+`AudioCommand.SetRemoteMic` and `AudioCommand.SetRemoteSpeaker` messages and
+sends them with `WebRtcLiveSession.sendAudioCommand`.
+
+The client packages the WebRTC audio device layer: Android `AudioRecord` is
+used to capture the phone microphone and `AudioTrack` to play camera audio.
+Blink-specific live-view sessions use the Ring WebRTC/RTP session libraries.
+Two-way audio is therefore negotiated and controlled as part of an existing
+live WebRTC session, rather than by uploading audio to a separate REST
+endpoint. The visible UI is push-to-talk, so simultaneous talk/listen behavior
+must not be assumed merely from the presence of both audio directions.
+
+**Camera movement.** Pan/tilt is separately capability-gated. The client
+stores a `pan_tilt_accessory` associated with a camera and displays controls
+only through `DirectionalPanTiltControlManager`. That manager prepares the
+control state, maps UI input to directions, handles press and long-press
+actions, tracks pan/tilt limit state, and supports calibration.
+
+During a WebRTC live-view session,
+`WebRtcDirectionalPanTiltNavigator` obtains a `PenguinControlService` for the
+active session device ID. It maps left/right/up/down input to
+`PenguinControlCommand` pan/tilt step or continuous-motion messages, sends a
+zero-speed continuous command for each axis to stop movement, and sends a
+separate calibration command. `PanHalted`, `PanAborted`, `TiltHalted`, and
+`TiltAborted` device notifications update the UI's stopped/limit state.
+
+A distinct `WebRtcRosieNavigator` obtains a `RosieControlService` for the
+active session and supports absolute `moveTo(pan, tilt)`, go-home, save-home,
+and panorama-overview commands. Its notifications include current position,
+motion status, axis limits, and overview completion. The session manager
+exposes both navigators and the general-command component, so movement
+commands travel on the authenticated live-view WebRTC remote-control path and
+receive session notifications; they are not independent generic camera HTTP
+actions.
+
+**DaveBot implication.** The current DaveBot Blink integration only adapts the
+legacy IMMI H.264 live-view path to browser WebRTC. It does not establish the
+Blink application's audio/control session and therefore cannot safely infer,
+enable, or emulate talkback or movement. Supporting either feature requires
+per-camera capability discovery plus a separately validated implementation of
+the Blink WebRTC session's media and remote-control protocols. Do not treat
+internal names such as `Penguin` or `Rosie`, or the methods above, as a public
+API.
+
 ## Hue motion and switch event-stream recovery
 
 DaveBrain tracks mapped Hue switch presses plus Hue motion and ambient
